@@ -165,6 +165,10 @@ struct Index {
     if (pat.test(t)) {
       return true;
     }
+    // (间奏) (主歌) (副歌) (桥段) 这类段落标记也不是唱出来的
+    if (/^[（(].*[）)]$/.test(t)) {
+      return true;
+    }
     return new RegExp('^\\S{1,8}\\s*[:：]\\s*\\S').test(t);
   }
 
