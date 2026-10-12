@@ -39,6 +39,10 @@ struct Index {
   @State dlActive: boolean = false;
   @State manualHost: string = '';
   @State connectedServer: string = '';
+  // 状态文字必须由 @State 驱动：ForEach 的 key 不变就不会重建行，
+  // 行内直接读 downloader.staleNames（普通类字段）不会刷新
+  @State staleArr: string[] = [];
+  @State localArr: string[] = [];
   @State seekValue: number = 0;
   @State seekDragging: boolean = false;
 
@@ -68,11 +72,15 @@ struct Index {
     this.downloader.addListener(() => {
       this.dlProgress = this.downloader.progressText;
       this.dlActive = this.downloader.downloading;
+      this.syncFileStates();
     });
     this.engine.init(ctx);
     this.library.refresh(ctx);
     this.browser.start(ctx);
+    this.downloader.setMtimeFile(`${ctx.filesDir}/remote-mtimes.json`);
+    this.downloader.loadMtimes();
     this.downloader.scanLocal(this.library.musicDir(ctx));
+    this.syncFileStates();
     this.libTracks = this.library.tracks.slice();
     this.servers = this.browser.servers.slice();
     // 100ms 心跳：进度条与歌词按墙钟插值平滑走
@@ -625,13 +633,21 @@ struct Index {
           this.pillButton('清空', false, () => {
             this.selected = [];
           })
-          this.pillButton(this.dlActive ? '停止' : '下载选中', true, () => {
-            if (this.dlActive) {
-              this.downloader.cancelRequested = true;
-            } else {
-              this.startDownload();
-            }
-          })
+          // 下载按钮直接内联写：@Builder 按值传参不会随 @State 刷新，
+          // 之前下载完标签卡在"停止"就是这个原因
+          Text(this.dlActive ? '停止' : '下载选中')
+            .fontSize(13)
+            .fontColor('#111114')
+            .backgroundColor(ACCENT)
+            .borderRadius(16)
+            .padding({ left: 12, right: 12, top: 7, bottom: 7 })
+            .onClick(() => {
+              if (this.dlActive) {
+                this.downloader.cancelRequested = true;
+              } else {
+                this.startDownload();
+              }
+            })
         }
         .width('100%')
         .padding({ left: 12, right: 12, top: 12 })
@@ -659,11 +675,11 @@ struct Index {
                   .maxLines(1)
                   .textOverflow({ overflow: TextOverflow.Ellipsis })
                   .layoutWeight(1)
-                Text(this.downloader.staleNames.has(f.name) ? '需更新'
-                  : (this.downloader.localNames.has(f.name) ? '已下载' : `${(f.size / 1048576).toFixed(1)}MB`))
+                Text(this.staleArr.includes(f.name) ? '需更新'
+                  : (this.localArr.includes(f.name) ? '已下载' : `${(f.size / 1048576).toFixed(1)}MB`))
                   .fontSize(12)
-                  .fontColor(this.downloader.staleNames.has(f.name) ? '#FF9F0A'
-                    : (this.downloader.localNames.has(f.name) ? '#30D158' : SUB))
+                  .fontColor(this.staleArr.includes(f.name) ? '#FF9F0A'
+                    : (this.localArr.includes(f.name) ? '#30D158' : SUB))
               }
               .width('100%')
               .padding({ left: 10, right: 10, top: 8, bottom: 8 })
@@ -698,12 +714,26 @@ struct Index {
     try {
       this.remoteFiles = await this.downloader.fetchManifest();
       this.downloader.markStale(this.remoteFiles, this.library.musicDir(this.ctx));
+      this.syncFileStates();
       this.connectedServer = `${s.host}:${s.port}`;
       this.dlProgress = '';
       this.selectAllPending();
     } catch (e) {
       this.dlProgress = '连接失败：检查 IP、防火墙与同步服务器窗口';
     }
+  }
+
+  private syncFileStates(): void {
+    const s: string[] = [];
+    this.downloader.staleNames.forEach((v: string) => {
+      s.push(v);
+    });
+    this.staleArr = s;
+    const l: string[] = [];
+    this.downloader.localNames.forEach((v: string) => {
+      l.push(v);
+    });
+    this.localArr = l;
   }
 
   private selectAllPending(): void {
@@ -731,7 +761,12 @@ struct Index {
     if (chosen.length === 0) {
       return;
     }
-    await this.downloader.downloadAll(chosen, this.library.musicDir(this.ctx));
+    const dir = this.library.musicDir(this.ctx);
+    await this.downloader.downloadAll(chosen, dir);
+    this.downloader.scanLocal(dir);
+    this.downloader.markStale(this.remoteFiles, dir);
+    this.syncFileStates();
+    this.dlActive = this.downloader.downloading;
     await this.library.refresh(this.ctx);
   }
 }

@@ -29,7 +29,53 @@ export class SyncDownloader {
   progressText: string = '';
   localNames: Set<string> = new Set();
   staleNames: Set<string> = new Set();
+  /// 每个文件上次下载时对应的电脑 mtime，用来判断"电脑上改过没有"
+  knownMtimes: Map<string, number> = new Map();
+  private mtimeFile: string = '';
   private listeners: Array<() => void> = [];
+
+  setMtimeFile(path: string): void {
+    this.mtimeFile = path;
+  }
+
+  loadMtimes(): void {
+    this.knownMtimes = new Map<string, number>();
+    if (this.mtimeFile.length === 0) {
+      return;
+    }
+    try {
+      if (!fs.accessSync(this.mtimeFile)) {
+        return;
+      }
+      const obj = JSON.parse(fs.readTextSync(this.mtimeFile)) as Record<string, number>;
+      for (const k of Object.keys(obj)) {
+        this.knownMtimes.set(k, obj[k]);
+      }
+    } catch (e) {
+      this.knownMtimes = new Map<string, number>();
+    }
+  }
+
+  private saveMtimes(): void {
+    if (this.mtimeFile.length === 0) {
+      return;
+    }
+    try {
+      const obj: Record<string, number> = {};
+      this.knownMtimes.forEach((v: number, k: string) => {
+        obj[k] = v;
+      });
+      const fh = fs.openSync(this.mtimeFile,
+        fs.OpenMode.WRITE_ONLY | fs.OpenMode.CREATE | fs.OpenMode.TRUNC);
+      try {
+        fs.writeSync(fh.fd, JSON.stringify(obj));
+      } finally {
+        fs.closeSync(fh);
+      }
+    } catch (e) {
+      hilog.error(0x0000, 'Shiyin', 'save mtimes failed');
+    }
+  }
 
   addListener(l: () => void): void {
     this.listeners.push(l);
@@ -63,7 +109,23 @@ export class SyncDownloader {
         continue;
       }
       try {
-        let m = fs.statSync(`${dir}/${f.name}`).mtime;
+        const st = fs.statSync(`${dir}/${f.name}`);
+        // 大小不同：一定是旧文件
+        if (st.size !== f.size) {
+          this.staleNames.add(f.name);
+          continue;
+        }
+        // 记住过这台电脑上的 mtime：直接比它，这才是"电脑上改过没有"
+        const known = this.knownMtimes.get(f.name);
+        if (known !== undefined) {
+          if (known !== f.mtime) {
+            this.staleNames.add(f.name);
+          }
+          continue;
+        }
+        // 从没记过：本地 mtime 是下载时间，跟电脑上的原始 mtime 必然不同，
+        // 只能先粗判一次（会全部标记一轮），重新下载后就按记下的 mtime 精确判断
+        let m = st.mtime;
         if (m > 1e12) {
           m = Math.floor(m / 1000);   // 某些接口返回毫秒
         }
@@ -114,9 +176,6 @@ export class SyncDownloader {
           break;
         }
         const stale = this.staleNames.has(f.name);
-        if (this.localNames.has(f.name) && !stale) {
-          continue;
-        }
         if (stale) {
           // 电脑上文件已更新：丢弃旧断点，整份重下
           try {
@@ -132,6 +191,8 @@ export class SyncDownloader {
         try {
           await this.downloadOne(f, dir);
           this.localNames.add(f.name);
+          this.knownMtimes.set(f.name, f.mtime);
+          this.saveMtimes();
           done++;
         } catch (e) {
           failed++;
