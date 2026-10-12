@@ -97,7 +97,8 @@ export class PlayerEngine {
           this.resumePositions.set(k, obj[k]);
         }
       }
-      this.lyricOffsetMs = this.prefs.getSync('lyricOffset', 0) as number;
+      // 手动歌词偏移已移除：清掉旧存档，避免残留值继续影响对齐
+      this.prefs.putSync('lyricOffset', 0);
     } catch (e) {
       this.prefs = null;
     }
@@ -331,19 +332,6 @@ export class PlayerEngine {
     const est = this.baseMs + (Date.now() - this.baseWall);
     const dur = this.durationMs > 0 ? this.durationMs : 0;
     return dur > 0 ? Math.min(est, dur) : est;
-  }
-
-  nudgeLyricOffset(deltaMs: number): void {
-    this.lyricOffsetMs += deltaMs;
-    if (this.prefs !== null) {
-      try {
-        this.prefs.putSync('lyricOffset', this.lyricOffsetMs);
-        this.prefs.flush();
-      } catch (e) {
-        // ignore
-      }
-    }
-    this.notify();
   }
 
   advance(by: number): void {

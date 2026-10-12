@@ -32,7 +32,6 @@ struct Index {
   @State repeatMode: number = 0;
   @State lyrics: LyricLine[] = [];
   @State lyricIdx: number = -1;
-  @State lyricOffset: number = 0;
   @State servers: ServerEntry[] = [];
   @State remoteFiles: RemoteFile[] = [];
   @State selected: string[] = [];
@@ -76,7 +75,6 @@ struct Index {
     this.downloader.scanLocal(this.library.musicDir(ctx));
     this.libTracks = this.library.tracks.slice();
     this.servers = this.browser.servers.slice();
-    this.lyricOffset = this.engine.lyricOffsetMs;
     // 100ms 心跳：进度条与歌词按墙钟插值平滑走
     this.timerId = setInterval(() => {
       this.tick();
@@ -112,7 +110,6 @@ struct Index {
     this.isPlaying = this.engine.isPlaying;
     this.shuffleOn = this.engine.shuffle;
     this.repeatMode = this.engine.repeatMode;
-    this.lyricOffset = this.engine.lyricOffsetMs;
     if (!this.seekDragging) {
       this.seekValue = this.curPosMs;
     }
@@ -154,7 +151,7 @@ struct Index {
   }
 
   // 制作信息 / 版权水印 / 空行：不是唱出来的词，不参与高亮
-  private nonVocal(s: string): boolean {
+  private nonVocal(s: string, early: boolean = false): boolean {
     const t = s.trim();
     if (t.length === 0) {
       return true;
@@ -169,19 +166,23 @@ struct Index {
     if (/^[（(].*[）)]$/.test(t)) {
       return true;
     }
+    // 开头几行的「歌名 – 歌手」是标题行
+    if (early && /\s[–—-]\s/.test(t)) {
+      return true;
+    }
     return new RegExp('^\\S{1,8}\\s*[:：]\\s*\\S').test(t);
   }
 
   private currentLyricIndex(): number {
-    // 墙钟插值 + 用户偏移 − 输出通路延迟（蓝牙耳机 180ms 量级）
-    const t = this.engine.positionMs() + this.engine.lyricOffsetMs - this.engine.outputLatencyMs;
+    // 墙钟插值 − 输出通路延迟（蓝牙耳机 180ms 量级）
+    const t = this.engine.positionMs() - this.engine.outputLatencyMs;
     let idx = -1;
     for (let i = 0; i < this.lyrics.length; i++) {
       if (this.lyrics[i].timeMs > t) {
         break;
       }
       // 空行与制作信息行不高亮：保持上一句，避免"歌词在跳但没人在唱"
-      if (!this.nonVocal(this.lyrics[i].text)) {
+      if (!this.nonVocal(this.lyrics[i].text, i < 3)) {
         idx = i;
       }
     }
@@ -492,37 +493,18 @@ struct Index {
         .width('100%')
         .margin({ top: 16 })
 
-        if (this.lyrics.length > 0) {
-          Row({ space: 8 }) {
-            Text(`歌词偏移 ${this.lyricOffset >= 0 ? '+' : ''}${(this.lyricOffset / 1000).toFixed(1)}s`)
-              .fontSize(12)
-              .fontColor(SUB)
-            if (this.engine.outputLatencyMs > 0) {
-              Text(`已自动 −${this.engine.outputLatencyMs}ms`)
-                .fontSize(11)
-                .fontColor(ACCENT)
-                .backgroundColor('#241A0D')
-                .borderRadius(8)
-                .padding({ left: 7, right: 7, top: 3, bottom: 3 })
-            }
+        if (Date.now() < this.manualUntil) {
+          Row() {
             Blank()
-            this.chipButton('−0.5s', () => {
-              this.engine.nudgeLyricOffset(-500);
+            this.chipButton('回到当前', () => {
+              this.manualUntil = 0;
+              if (this.lyricIdx >= 0) {
+                this.scroller.scrollToIndex(this.lyricIdx, true, ScrollAlign.CENTER);
+              }
             })
-            this.chipButton('+0.5s', () => {
-              this.engine.nudgeLyricOffset(500);
-            })
-            if (Date.now() < this.manualUntil) {
-              this.chipButton('回到当前', () => {
-                this.manualUntil = 0;
-                if (this.lyricIdx >= 0) {
-                  this.scroller.scrollToIndex(this.lyricIdx, true, ScrollAlign.CENTER);
-                }
-              })
-            }
           }
           .width('100%')
-          .padding({ left: 20, right: 20, top: 16 })
+          .padding({ left: 20, right: 20, top: 12 })
         }
 
         if (this.lyrics.length === 0) {
