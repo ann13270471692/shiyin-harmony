@@ -154,14 +154,16 @@ struct Index {
   }
 
   private currentLyricIndex(): number {
-    // 墙钟插值 + 用户偏移；提前量只留 120ms，避免歌词比人声早
-    const t = this.engine.positionMs() + this.engine.lyricOffsetMs;
+    // 墙钟插值 + 用户偏移 − 输出通路延迟（蓝牙耳机 180ms 量级）
+    const t = this.engine.positionMs() + this.engine.lyricOffsetMs - this.engine.outputLatencyMs;
     let idx = -1;
     for (let i = 0; i < this.lyrics.length; i++) {
-      if (this.lyrics[i].timeMs <= t + 120) {
-        idx = i;
-      } else {
+      if (this.lyrics[i].timeMs > t) {
         break;
+      }
+      // 空行只是间奏占位，不高亮：保持上一句
+      if (this.lyrics[i].text.trim().length > 0) {
+        idx = i;
       }
     }
     return idx;
@@ -427,7 +429,8 @@ struct Index {
 
         if (this.lyrics.length > 0) {
           Row({ space: 10 }) {
-            this.sectionTitle(`歌词偏移 ${this.lyricOffset >= 0 ? '+' : ''}${(this.lyricOffset / 1000).toFixed(1)}s`)
+            this.sectionTitle(`歌词偏移 ${this.lyricOffset >= 0 ? '+' : ''}${(this.lyricOffset / 1000).toFixed(1)}s`
+              + (this.engine.outputLatencyMs > 0 ? `（自动 −${this.engine.outputLatencyMs}ms）` : ''))
             this.pillButton('−0.5s', false, () => {
               this.engine.nudgeLyricOffset(-500);
             })
@@ -577,9 +580,11 @@ struct Index {
                   .maxLines(1)
                   .textOverflow({ overflow: TextOverflow.Ellipsis })
                   .layoutWeight(1)
-                Text(this.downloader.localNames.has(f.name) ? '已下载' : `${(f.size / 1048576).toFixed(1)}MB`)
+                Text(this.downloader.staleNames.has(f.name) ? '需更新'
+                  : (this.downloader.localNames.has(f.name) ? '已下载' : `${(f.size / 1048576).toFixed(1)}MB`))
                   .fontSize(12)
-                  .fontColor(this.downloader.localNames.has(f.name) ? '#30D158' : SUB)
+                  .fontColor(this.downloader.staleNames.has(f.name) ? '#FF9F0A'
+                    : (this.downloader.localNames.has(f.name) ? '#30D158' : SUB))
               }
               .width('100%')
               .padding({ left: 10, right: 10, top: 8, bottom: 8 })
@@ -613,6 +618,7 @@ struct Index {
     this.downloader.scanLocal(this.library.musicDir(this.ctx));
     try {
       this.remoteFiles = await this.downloader.fetchManifest();
+      this.downloader.markStale(this.remoteFiles, this.library.musicDir(this.ctx));
       this.connectedServer = `${s.host}:${s.port}`;
       this.dlProgress = '';
       this.selectAllPending();
@@ -623,7 +629,8 @@ struct Index {
 
   private selectAllPending(): void {
     this.selected = this.remoteFiles
-      .filter((f: RemoteFile) => !this.downloader.localNames.has(f.name))
+      .filter((f: RemoteFile) => !this.downloader.localNames.has(f.name)
+        || this.downloader.staleNames.has(f.name))
       .map((f: RemoteFile) => f.name);
   }
 

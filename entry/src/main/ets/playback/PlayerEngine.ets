@@ -1,4 +1,5 @@
 import { media } from '@kit.MediaKit';
+import { audio } from '@kit.AudioKit';
 import { avSession } from '@kit.AVSessionKit';
 import { backgroundTaskManager } from '@kit.BackgroundTasksKit';
 import { common, wantAgent, Want, WantAgent } from '@kit.AbilityKit';
@@ -46,6 +47,31 @@ export class PlayerEngine {
   private baseMs: number = 0;
   private baseWall: number = 0;
   lyricOffsetMs: number = 0;
+  // 输出通路延迟（ms）：蓝牙 A2DP 实测可达 150~250ms，歌词要按这个往后推
+  outputLatencyMs: number = 0;
+
+  refreshOutputLatency(): void {
+    try {
+      const rm = audio.getAudioManager().getRoutingManager();
+      const devs = rm.getDevicesSync(audio.DeviceFlag.OUTPUT_DEVICES_FLAG);
+      let ms = 0;
+      for (const d of devs) {
+        if (d.deviceType === audio.DeviceType.BLUETOOTH_A2DP) {
+          ms = 180;
+          break;
+        }
+        if (d.deviceType === audio.DeviceType.BLUETOOTH_SCO) {
+          ms = 120;
+        } else if (d.deviceType === audio.DeviceType.WIRED_HEADPHONES
+          || d.deviceType === audio.DeviceType.WIRED_HEADSET) {
+          ms = 25;
+        }
+      }
+      this.outputLatencyMs = ms;
+    } catch (e) {
+      this.outputLatencyMs = 0;
+    }
+  }
 
   addListener(l: () => void): void {
     this.listeners.push(l);
@@ -98,6 +124,7 @@ export class PlayerEngine {
           }
         } else if (state === 'playing') {
           this.isPlaying = true;
+          this.refreshOutputLatency();
           this.baseWall = Date.now();
           this.startBg();
           this.pushSessionState();

@@ -27,6 +27,7 @@ export class SyncDownloader {
   cancelRequested: boolean = false;
   progressText: string = '';
   localNames: Set<string> = new Set();
+  staleNames: Set<string> = new Set();
   private listeners: Array<() => void> = [];
 
   addListener(l: () => void): void {
@@ -51,6 +52,23 @@ export class SyncDownloader {
       }
     } catch (e) {
       // dir missing
+    }
+  }
+
+  markStale(files: RemoteFile[], dir: string): void {
+    this.staleNames = new Set<string>();
+    for (const f of files) {
+      if (!this.localNames.has(f.name)) {
+        continue;
+      }
+      try {
+        const st = fs.statSync(`${dir}/${f.name}`);
+        if (Math.abs(st.mtime - f.mtime) > 2) {
+          this.staleNames.add(f.name);
+        }
+      } catch (e) {
+        this.staleNames.add(f.name);
+      }
     }
   }
 
@@ -91,8 +109,19 @@ export class SyncDownloader {
           this.progressText = '已停止';
           break;
         }
-        if (this.localNames.has(f.name)) {
+        const stale = this.staleNames.has(f.name);
+        if (this.localNames.has(f.name) && !stale) {
           continue;
+        }
+        if (stale) {
+          // 电脑上文件已更新：丢弃旧断点，整份重下
+          try {
+            if (fs.accessSync(`${dir}/${f.name}.part`)) {
+              fs.unlinkSync(`${dir}/${f.name}.part`);
+            }
+          } catch (e) {
+            // ignore
+          }
         }
         this.progressText = `下载 ${f.name}（剩余约 ${files.length - done - failed} 个）`;
         this.notify();
