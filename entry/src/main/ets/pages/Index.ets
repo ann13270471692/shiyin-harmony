@@ -136,7 +136,7 @@ struct Index {
     if (idx !== this.lyricIdx) {
       this.lyricIdx = idx;
       if (idx >= 0 && Date.now() >= this.manualUntil) {
-        this.scroller.scrollToIndex(idx, true);
+        this.scroller.scrollToIndex(idx, true, ScrollAlign.CENTER);
       }
     }
   }
