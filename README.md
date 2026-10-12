@@ -28,6 +28,7 @@ entry/src/main/
 
 > ⚠️ hvigor 不接受中文路径：工程须放在纯英文路径（本机为 `F:\shiyin-harmony`）。
 > ⚠️ 调试 Profile 与 bundleName 绑定：**必须在打开本工程时**做自动签名，别在别的工程里生成。
+> ⚠️ 本机 `.ohos\config` 里现存的证书绑定的是 `com.wordlink.app` 和另一台设备（UDID 不匹配 Mate 70），直接复用会安装失败——务必按第 4 步为本工程重新生成。
 
 1. 安装 DevEco Studio 26+（华为账号登录下载）：https://developer.huawei.com/consumer/cn/deveco-studio/
 2. File → Open → 选择 `F:\shiyin-harmony`，等待 hvigor 同步
