@@ -1,4 +1,5 @@
 import { mdns } from '@kit.NetworkKit';
+import { common } from '@kit.AbilityKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { BusinessError } from '@kit.BasicServicesKit';
 
@@ -25,7 +26,8 @@ export class SyncBrowser {
   }
 
   servers: ServerEntry[] = [];
-  private service: mdns.Service | null = null;
+  private discovery: mdns.DiscoveryService | null = null;
+  private ctx: common.UIAbilityContext | null = null;
   private listeners: Array<() => void> = [];
 
   addListener(l: () => void): void {
@@ -38,41 +40,59 @@ export class SyncBrowser {
     }
   }
 
-  start(): void {
-    if (this.service !== null) {
+  start(context: common.UIAbilityContext): void {
+    if (this.discovery !== null) {
       return;
     }
+    this.ctx = context;
     try {
-      const svc = mdns.createService('_shiyin', '_tcp');
-      svc.on('serviceFound', (info: mdns.ServiceInfo) => {
-        const host = info.hostAddr ?? '';
-        if (host.length === 0) {
-          return;
-        }
-        const name = info.instanceName ?? '同步服务器';
-        const port = info.port ?? 8450;
-        if (!this.servers.some((s: ServerEntry) => s.host === host && s.port === port)) {
-          this.servers.push(new ServerEntry(name, host, port));
-          this.notify();
+      const svc = mdns.createDiscoveryService(context, '_shiyin._tcp');
+      svc.on('serviceFound', (info: mdns.LocalServiceInfo) => {
+        const host = info.host !== undefined ? info.host.address : '';
+        const port = info.port !== undefined ? info.port : 8450;
+        const name = info.serviceName.length > 0 ? info.serviceName : '同步服务器';
+        if (host.length > 0) {
+          this.addServer(name, host, port);
+        } else if (this.ctx !== null) {
+          const req: mdns.LocalServiceInfo = {
+            serviceType: info.serviceType,
+            serviceName: info.serviceName,
+            host: { address: '' }
+          };
+          mdns.resolveLocalService(this.ctx, req).then((r: mdns.LocalServiceInfo) => {
+            const h = r.host !== undefined ? r.host.address : '';
+            const p = r.port !== undefined ? r.port : 8450;
+            if (h.length > 0) {
+              this.addServer(info.serviceName, h, p);
+            }
+          }).catch((e: BusinessError) => {
+            hilog.warn(0x0000, 'Shiyin', 'mdns resolve failed %{public}d', e.code);
+          });
         }
       });
-      svc.on('serviceLost', (info: mdns.ServiceInfo) => {
-        const host = info.hostAddr ?? '';
-        const port = info.port ?? 8450;
-        this.servers = this.servers.filter((s: ServerEntry) => !(s.host === host && s.port === port));
+      svc.on('serviceLost', (info: mdns.LocalServiceInfo) => {
+        const host = info.host !== undefined ? info.host.address : '';
+        this.servers = this.servers.filter((s: ServerEntry) => !(s.host === host && s.name === info.serviceName));
         this.notify();
       });
-      svc.startSearchingServices();
-      this.service = svc;
+      svc.startSearchingMDNS();
+      this.discovery = svc;
     } catch (e) {
       const err = e as BusinessError;
-      hilog.error(0x0000, 'Shiyin', 'mdns browse failed %{public}d', err.code);
+      hilog.error(0x0000, 'Shiyin', 'mdns discovery failed %{public}d', err.code);
+    }
+  }
+
+  private addServer(name: string, host: string, port: number): void {
+    if (!this.servers.some((s: ServerEntry) => s.host === host && s.port === port)) {
+      this.servers.push(new ServerEntry(name, host, port));
+      this.notify();
     }
   }
 
   addManual(host: string, port: number): void {
     if (!this.servers.some((s: ServerEntry) => s.host === host && s.port === port)) {
-      this.servers.push(new ServerEntry(`${host}`, host, port));
+      this.servers.push(new ServerEntry(host, host, port));
       this.notify();
     }
   }

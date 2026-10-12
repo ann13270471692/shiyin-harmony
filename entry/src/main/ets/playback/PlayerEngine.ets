@@ -1,8 +1,7 @@
 import { media } from '@kit.MediaKit';
 import { avSession } from '@kit.AVSessionKit';
-import { audio } from '@kit.AudioKit';
 import { backgroundTaskManager } from '@kit.BackgroundTasksKit';
-import { common, Want } from '@kit.AbilityKit';
+import { common, wantAgent, Want, WantAgent } from '@kit.AbilityKit';
 import { fileIo as fs } from '@kit.CoreFileKit';
 import { preferences } from '@kit.ArkData';
 import { hilog } from '@kit.PerformanceAnalysisKit';
@@ -370,15 +369,14 @@ export class PlayerEngine {
     }
     try {
       const w: Want = { bundleName: 'com.shiyin.player', abilityName: 'EntryAbility' };
-      const info: audio.AudioRendererInfo = {
-        samplingRate: audio.AudioSamplingRate.SAMPLE_RATE_44100,
-        channels: audio.AudioChannel.CHANNEL_2,
-        sampleFormat: audio.AudioSampleFormat.SAMPLE_FORMAT_S16LE,
-        encodingType: audio.AudioEncodingType.ENCODING_TYPE_RAW,
-        usage: audio.StreamUsage.STREAM_USAGE_MUSIC,
-        rendererFlags: 0
+      const info: wantAgent.WantAgentInfo = {
+        wants: [w],
+        actionType: wantAgent.OperationType.START_ABILITY,
+        requestCode: 0,
+        actionFlags: [wantAgent.WantAgentFlags.UPDATE_PRESENT_FLAG]
       };
-      await backgroundTaskManager.startBackgroundRunning(w, [backgroundTaskManager.BackgroundMode.AUDIO_PLAYBACK], info);
+      const wa: WantAgent = await wantAgent.getWantAgent(info);
+      await backgroundTaskManager.startBackgroundRunning(this.context, backgroundTaskManager.BackgroundMode.AUDIO_PLAYBACK, wa);
       this.bgActive = true;
     } catch (e) {
       hilog.warn(0x0000, 'Shiyin', 'startBg failed');

@@ -60,7 +60,7 @@ struct Index {
     });
     this.engine.init(ctx);
     this.library.refresh(ctx);
-    this.browser.start();
+    this.browser.start(ctx);
     this.downloader.scanLocal(this.library.musicDir(ctx));
     this.libTracks = this.library.tracks.slice();
     this.servers = this.browser.servers.slice();
