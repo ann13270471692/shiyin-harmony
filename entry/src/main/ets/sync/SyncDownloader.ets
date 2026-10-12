@@ -6,6 +6,7 @@ import { BusinessError } from '@kit.BasicServicesKit';
 export class RemoteFile {
   name: string = '';
   size: number = 0;
+  mtime: number = 0;
 }
 
 export class Manifest {
@@ -62,8 +63,11 @@ export class SyncDownloader {
         continue;
       }
       try {
-        const st = fs.statSync(`${dir}/${f.name}`);
-        if (Math.abs(st.mtime - f.mtime) > 2) {
+        let m = fs.statSync(`${dir}/${f.name}`).mtime;
+        if (m > 1e12) {
+          m = Math.floor(m / 1000);   // 某些接口返回毫秒
+        }
+        if (Math.abs(m - f.mtime) > 2) {
           this.staleNames.add(f.name);
         }
       } catch (e) {

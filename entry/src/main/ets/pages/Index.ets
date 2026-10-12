@@ -153,6 +153,21 @@ struct Index {
     }
   }
 
+  // 制作信息 / 版权水印 / 空行：不是唱出来的词，不参与高亮
+  private nonVocal(s: string): boolean {
+    const t = s.trim();
+    if (t.length === 0) {
+      return true;
+    }
+    const pat = new RegExp('作词|作曲|编曲|制作人|出品|发行|录音|混音|母带|和声|监制|统筹|总监|版权|厂牌|经纪|'
+      + '宣传|文案|封面|设计|摄影|吉他|贝斯|鼓手|弦乐|提琴|铜管|钢琴|合成|Program|Engineer|Studio|Label|'
+      + 'Recorded|Mixed|Master|Written|Arrang|未经许可|翻唱|禁止|ISRC|OPI|PBM|SPD|OP\\s*[:：]');
+    if (pat.test(t)) {
+      return true;
+    }
+    return new RegExp('^\\S{1,8}\\s*[:：]\\s*\\S').test(t);
+  }
+
   private currentLyricIndex(): number {
     // 墙钟插值 + 用户偏移 − 输出通路延迟（蓝牙耳机 180ms 量级）
     const t = this.engine.positionMs() + this.engine.lyricOffsetMs - this.engine.outputLatencyMs;
@@ -161,8 +176,8 @@ struct Index {
       if (this.lyrics[i].timeMs > t) {
         break;
       }
-      // 空行只是间奏占位，不高亮：保持上一句
-      if (this.lyrics[i].text.trim().length > 0) {
+      // 空行与制作信息行不高亮：保持上一句，避免"歌词在跳但没人在唱"
+      if (!this.nonVocal(this.lyrics[i].text)) {
         idx = i;
       }
     }
