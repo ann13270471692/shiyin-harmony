@@ -234,18 +234,22 @@ struct Index {
     .backgroundColor(BG)
   }
 
-  @Builder tabItem(label: string, glyph: string, idx: number) {
-    Column({ space: 3 }) {
-      Text(glyph)
-        .fontSize(21)
-        .fontColor(this.tabIdx === idx ? ACCENT : DIM)
+  @Builder tabItem(label: string, icon: Resource, idx: number) {
+    Column({ space: 4 }) {
+      SymbolGlyph(icon)
+        .fontSize(22)
+        .fontColor([this.tabIdx === idx ? ACCENT : SUB])
       Text(label)
-        .fontSize(12)
+        .fontSize(11)
         .fontColor(this.tabIdx === idx ? ACCENT : SUB)
         .fontWeight(this.tabIdx === idx ? FontWeight.Medium : FontWeight.Normal)
+      Circle()
+        .width(5)
+        .height(5)
+        .fill(this.tabIdx === idx ? ACCENT : Color.Transparent)
     }
     .layoutWeight(1)
-    .padding({ top: 8, bottom: 10 })
+    .padding({ top: 8, bottom: 9 })
     .onClick(() => {
       this.tabIdx = idx;
     })
@@ -255,9 +259,9 @@ struct Index {
     Column() {
       Divider().strokeWidth(0.5).color(LINE)
       Row() {
-        this.tabItem('曲库', '♫', 0)
-        this.tabItem('播放', '▷', 1)
-        this.tabItem('导入', '⇩', 2)
+        this.tabItem('曲库', $r('sys.symbol.music_note_list'), 0)
+        this.tabItem('播放', $r('sys.symbol.play_round_triangle_fill'), 1)
+        this.tabItem('导入', $r('sys.symbol.download'), 2)
       }
       .width('100%')
     }
@@ -267,6 +271,19 @@ struct Index {
 
   @Builder sectionTitle(t: string) {
     Text(t).fontSize(13).fontColor(SUB).fontFamily('HarmonyOS Sans')
+  }
+
+  // 图标按钮：无底色，只有符号 + 点击热区
+  @Builder iconBtn(icon: Resource, size: number, color: string, action: () => void) {
+    Stack() {
+      SymbolGlyph(icon)
+        .fontSize(size)
+        .fontColor([color])
+    }
+    .width(46)
+    .height(46)
+    .borderRadius(23)
+    .onClick(action)
   }
 
   @Builder pillButton(label: string, primary: boolean, action: () => void) {
@@ -280,39 +297,55 @@ struct Index {
       .onClick(action)
   }
 
+  // 小号胶囊：用于歌词偏移这类次级操作
+  @Builder chipButton(label: string, action: () => void) {
+    Text(label)
+      .fontSize(12)
+      .fontColor(SUB)
+      .backgroundColor('#15151B')
+      .borderRadius(14)
+      .border({ width: 1, color: LINE })
+      .padding({ left: 10, right: 10, top: 5, bottom: 5 })
+      .onClick(action)
+  }
+
   @Builder libraryTab() {
     Column() {
       Row() {
-        Column({ space: 2 }) {
+        Column({ space: 3 }) {
           Text('梦秋音乐').fontSize(26).fontWeight(FontWeight.Bold).fontColor(TXT)
           Text(`${this.libTracks.length} 首 · 本地`).fontSize(12).fontColor(SUB)
         }.alignItems(HorizontalAlign.Start)
         Blank()
-        this.pillButton('刷新', false, () => {
+        this.iconBtn($r('sys.symbol.arrow_clockwise'), 20, SUB, () => {
           if (this.ctx !== null) {
             this.library.refresh(this.ctx);
           }
         })
-      }.padding({ left: 18, right: 18, top: 16, bottom: 12 }).width('100%')
+      }.padding({ left: 18, right: 14, top: 16, bottom: 10 }).width('100%')
 
       if (this.libTracks.length === 0) {
-        Column({ space: 8 }) {
-          Text('♫').fontSize(44).fontColor(DIM)
+        Column({ space: 10 }) {
+          SymbolGlyph($r('sys.symbol.music_note_list'))
+            .fontSize(44)
+            .fontColor([DIM])
           Text('曲库为空').fontSize(16).fontColor(TXT)
           Text('到「导入」标签从电脑拉取音乐').fontSize(13).fontColor(SUB)
         }.justifyContent(FlexAlign.Center).layoutWeight(1)
       } else {
         List({ space: 6 }) {
-          ForEach(this.libTracks, (t: Track, i: number) => {
+          ForEach(this.libTracks, (t: Track) => {
             ListItem() {
               Row({ space: 12 }) {
                 Stack() {
-                  Text(i % 2 === 0 ? '♪' : '♫').fontSize(16).fontColor(ACCENT)
+                  SymbolGlyph($r('sys.symbol.music_fill'))
+                    .fontSize(16)
+                    .fontColor([ACCENT])
                 }
-                .width(40)
-                .height(40)
-                .borderRadius(10)
-                .backgroundColor('#22222B')
+                .width(42)
+                .height(42)
+                .borderRadius(11)
+                .backgroundColor(t.path === this.curPath ? '#2E2314' : '#22222B')
 
                 Column({ space: 3 }) {
                   Text(t.title)
@@ -333,7 +366,9 @@ struct Index {
                 .layoutWeight(1)
 
                 if (t.path === this.curPath) {
-                  Text(this.isPlaying ? '▮▮' : '▶').fontSize(13).fontColor(ACCENT)
+                  SymbolGlyph(this.isPlaying ? $r('sys.symbol.pause_fill') : $r('sys.symbol.play_fill'))
+                    .fontSize(13)
+                    .fontColor([ACCENT])
                 }
                 Text(TimeFormat.ms(t.durationMs)).fontSize(12).fontColor(DIM)
               }
@@ -357,49 +392,54 @@ struct Index {
   @Builder nowPlayingTab() {
     Column() {
       if (this.curTitle === '') {
-        Column({ space: 8 }) {
-          Text('♪').fontSize(44).fontColor(DIM)
+        Column({ space: 10 }) {
+          SymbolGlyph($r('sys.symbol.music_note_circle_fill'))
+            .fontSize(46)
+            .fontColor([DIM])
           Text('未在播放').fontSize(16).fontColor(TXT)
           Text('到「曲库」选一首开始').fontSize(13).fontColor(SUB)
         }.justifyContent(FlexAlign.Center).layoutWeight(1)
       } else {
-        Row({ space: 14 }) {
+        Row({ space: 16 }) {
           Stack() {
-            Text('♪').fontSize(30).fontColor('#FFFFFF')
+            SymbolGlyph($r('sys.symbol.music_fill'))
+              .fontSize(30)
+              .fontColor(['#FFFFFF'])
           }
-          .width(72)
-          .height(72)
-          .borderRadius(14)
-          .linearGradient({ angle: 135, colors: [['#5A3A10', 0.0], ['#241A2E', 1.0]] })
+          .width(84)
+          .height(84)
+          .borderRadius(18)
+          .linearGradient({ angle: 135, colors: [['#6B4410', 0.0], ['#2A1E36', 1.0]] })
 
-          Column({ space: 4 }) {
+          Column({ space: 5 }) {
             Text(this.curTitle)
-              .fontSize(19)
+              .fontSize(20)
               .fontWeight(FontWeight.Bold)
               .fontColor(TXT)
               .maxLines(1)
               .textOverflow({ overflow: TextOverflow.Ellipsis })
               .width('100%')
-            Text(this.curArtist).fontSize(13).fontColor(SUB).maxLines(1).width('100%')
-            Text(`${TimeFormat.ms(this.curPosMs)} / ${TimeFormat.ms(this.curDurMs)}`)
-              .fontSize(11)
-              .fontColor(DIM)
-              .margin({ top: 2 })
+            Text(this.curArtist)
+              .fontSize(13)
+              .fontColor(SUB)
+              .maxLines(1)
+              .textOverflow({ overflow: TextOverflow.Ellipsis })
+              .width('100%')
           }
           .alignItems(HorizontalAlign.Start)
           .layoutWeight(1)
         }
         .width('100%')
-        .padding({ left: 16, right: 16, top: 14 })
+        .padding({ left: 20, right: 20, top: 18 })
 
         Slider({ value: this.seekValue, min: 0, max: Math.max(this.curDurMs, 1000), step: 100 })
           .selectedColor(ACCENT)
-          .trackColor(LINE)
-          .blockColor(ACCENT)
-          .blockSize({ width: 14, height: 14 })
-          .trackThickness(4)
+          .trackColor('#2C2C36')
+          .blockColor('#FFFFFF')
+          .blockSize({ width: 12, height: 12 })
+          .trackThickness(3)
           .width('100%')
-          .margin({ top: 10 })
+          .margin({ top: 16 })
           .onChange((v: number, mode: SliderChangeMode) => {
             if (mode === SliderChangeMode.Begin || mode === SliderChangeMode.Moving) {
               this.seekDragging = true;
@@ -410,55 +450,70 @@ struct Index {
             }
           })
 
-        Row({ space: 26 }) {
-          Text(this.shuffleOn ? '🔀' : '🔀')
-            .fontSize(20)
-            .fontColor(this.shuffleOn ? ACCENT : DIM)
-            .onClick(() => {
-              this.engine.setShuffle(!this.shuffleOn);
-            })
-          Text('⏮').fontSize(26).fontColor(TXT)
-            .onClick(() => {
-              this.engine.advance(-1);
-            })
+        Row() {
+          Text(TimeFormat.ms(this.curPosMs)).fontSize(11).fontColor(DIM)
+          Blank()
+          Text(`-${TimeFormat.ms(Math.max(this.curDurMs - this.curPosMs, 0))}`).fontSize(11).fontColor(DIM)
+        }
+        .width('100%')
+        .padding({ left: 22, right: 22 })
+        .margin({ top: 4 })
+
+        Row() {
+          this.iconBtn($r('sys.symbol.shuffle'), 20, this.shuffleOn ? ACCENT : SUB, () => {
+            this.engine.setShuffle(!this.shuffleOn);
+          })
+          this.iconBtn($r('sys.symbol.backward_end_fill'), 24, TXT, () => {
+            this.engine.advance(-1);
+          })
           Stack() {
-            Text(this.isPlaying ? '❚❚' : '▷').fontSize(this.isPlaying ? 20 : 26).fontColor('#111114')
+            SymbolGlyph(this.isPlaying ? $r('sys.symbol.pause_fill') : $r('sys.symbol.play_fill'))
+              .fontSize(26)
+              .fontColor(['#111114'])
           }
-          .width(62)
-          .height(62)
-          .borderRadius(31)
+          .width(66)
+          .height(66)
+          .borderRadius(33)
           .backgroundColor(ACCENT)
+          .shadow({ radius: 18, color: '#4DFF9F0A', offsetY: 6 })
           .onClick(() => {
             this.engine.togglePlay();
           })
-          Text('⏭').fontSize(26).fontColor(TXT)
-            .onClick(() => {
-              this.engine.advance(1);
-            })
-          Text(this.repeatMode === RepeatMode.Off ? '🔁' : (this.repeatMode === RepeatMode.All ? '🔁' : '🔂'))
-            .fontSize(20)
-            .fontColor(this.repeatMode === RepeatMode.Off ? DIM : ACCENT)
-            .onClick(() => {
-              this.engine.cycleRepeat();
-            })
+          this.iconBtn($r('sys.symbol.forward_end_fill'), 24, TXT, () => {
+            this.engine.advance(1);
+          })
+          this.iconBtn(this.repeatMode === RepeatMode.One
+            ? $r('sys.symbol.repeat_1')
+            : $r('sys.symbol.repeat'), 20, this.repeatMode === RepeatMode.Off ? SUB : ACCENT, () => {
+            this.engine.cycleRepeat();
+          })
         }
-        .justifyContent(FlexAlign.Center)
+        .justifyContent(FlexAlign.SpaceEvenly)
         .width('100%')
-        .margin({ top: 12 })
+        .margin({ top: 16 })
 
         if (this.lyrics.length > 0) {
-          Row({ space: 10 }) {
-            this.sectionTitle(`歌词偏移 ${this.lyricOffset >= 0 ? '+' : ''}${(this.lyricOffset / 1000).toFixed(1)}s`
-              + (this.engine.outputLatencyMs > 0 ? `（自动 −${this.engine.outputLatencyMs}ms）` : ''))
-            this.pillButton('−0.5s', false, () => {
+          Row({ space: 8 }) {
+            Text(`歌词偏移 ${this.lyricOffset >= 0 ? '+' : ''}${(this.lyricOffset / 1000).toFixed(1)}s`)
+              .fontSize(12)
+              .fontColor(SUB)
+            if (this.engine.outputLatencyMs > 0) {
+              Text(`已自动 −${this.engine.outputLatencyMs}ms`)
+                .fontSize(11)
+                .fontColor(ACCENT)
+                .backgroundColor('#241A0D')
+                .borderRadius(8)
+                .padding({ left: 7, right: 7, top: 3, bottom: 3 })
+            }
+            Blank()
+            this.chipButton('−0.5s', () => {
               this.engine.nudgeLyricOffset(-500);
             })
-            this.pillButton('+0.5s', false, () => {
+            this.chipButton('+0.5s', () => {
               this.engine.nudgeLyricOffset(500);
             })
-            Blank()
             if (Date.now() < this.manualUntil) {
-              this.pillButton('回到当前', true, () => {
+              this.chipButton('回到当前', () => {
                 this.manualUntil = 0;
                 if (this.lyricIdx >= 0) {
                   this.scroller.scrollToIndex(this.lyricIdx, true, ScrollAlign.CENTER);
@@ -467,11 +522,14 @@ struct Index {
             }
           }
           .width('100%')
-          .padding({ left: 16, right: 16, top: 10 })
+          .padding({ left: 20, right: 20, top: 16 })
         }
 
         if (this.lyrics.length === 0) {
-          Column() {
+          Column({ space: 10 }) {
+            SymbolGlyph($r('sys.symbol.music_slash_fill'))
+              .fontSize(34)
+              .fontColor([DIM])
             Text('暂无歌词').fontColor(SUB).fontSize(14)
           }.justifyContent(FlexAlign.Center).layoutWeight(1)
         } else {
@@ -479,12 +537,13 @@ struct Index {
             ForEach(this.lyrics, (line: LyricLine, idx: number) => {
               ListItem() {
                 Text(line.text)
-                  .fontSize(idx === this.lyricIdx ? 19 : 15)
-                  .fontColor(idx === this.lyricIdx ? '#FFFFFF' : (idx < this.lyricIdx ? DIM : SUB))
+                  .fontSize(idx === this.lyricIdx ? 20 : 15)
+                  .fontColor(idx === this.lyricIdx ? '#FFFFFF' : (idx < this.lyricIdx ? DIM : '#8A8A94'))
                   .fontWeight(idx === this.lyricIdx ? FontWeight.Bold : FontWeight.Normal)
+                  .lineHeight(idx === this.lyricIdx ? 30 : 22)
                   .textAlign(TextAlign.Center)
                   .width('100%')
-                  .padding({ top: 7, bottom: 7 })
+                  .padding({ top: 9, bottom: 9 })
               }
               .onClick(() => {
                 this.engine.seekTo(line.timeMs);
@@ -514,13 +573,27 @@ struct Index {
       .width('100%')
       .padding({ left: 18, right: 18, top: 16, bottom: 12 })
 
-      Column({ space: 8 }) {
-        this.sectionTitle('发现的服务器')
+      Column({ space: 10 }) {
+        Row({ space: 8 }) {
+          SymbolGlyph($r('sys.symbol.wifi_router'))
+            .fontSize(16)
+            .fontColor([this.servers.length > 0 ? ACCENT : DIM])
+          Text('发现的服务器').fontSize(13).fontColor(SUB)
+        }.width('100%')
         if (this.servers.length === 0) {
-          Text('未发现服务器，可在下方手动输入电脑 IP').fontSize(12).fontColor(DIM)
+          Text('未发现服务器，可在下方手动输入电脑 IP').fontSize(12).fontColor(DIM).width('100%')
         }
         ForEach(this.servers, (s: ServerEntry) => {
-          Row() {
+          Row({ space: 10 }) {
+            Stack() {
+              SymbolGlyph($r('sys.symbol.local'))
+                .fontSize(16)
+                .fontColor([SUB])
+            }
+            .width(36)
+            .height(36)
+            .borderRadius(10)
+            .backgroundColor('#22222B')
             Column({ space: 2 }) {
               Text(s.name).fontSize(15).fontColor(TXT)
               Text(`${s.host}:${s.port}`).fontSize(12).fontColor(SUB)
@@ -532,9 +605,9 @@ struct Index {
         }, (s: ServerEntry) => `${s.host}:${s.port}`)
       }
       .width('100%')
-      .padding(14)
+      .padding(16)
       .backgroundColor(CARD)
-      .borderRadius(14)
+      .borderRadius(16)
       .margin({ left: 12, right: 12 })
 
       Row({ space: 8 }) {
@@ -560,6 +633,9 @@ struct Index {
 
       if (this.connectedServer.length > 0) {
         Row({ space: 8 }) {
+          SymbolGlyph($r('sys.symbol.checkmark_circle_fill'))
+            .fontSize(14)
+            .fontColor(['#30D158'])
           Text(`已连接 ${this.connectedServer}`).fontSize(12).fontColor(SUB).layoutWeight(1)
           this.pillButton('全选未下载', false, () => {
             this.selectAllPending();
@@ -587,9 +663,11 @@ struct Index {
           ForEach(this.remoteFiles, (f: RemoteFile) => {
             ListItem() {
               Row({ space: 8 }) {
-                Text(this.selected.includes(f.name) ? '☑' : '☐')
+                SymbolGlyph(this.selected.includes(f.name)
+                  ? $r('sys.symbol.checkmark_square_fill')
+                  : $r('sys.symbol.square'))
                   .fontSize(20)
-                  .fontColor(this.selected.includes(f.name) ? ACCENT : DIM)
+                  .fontColor([this.selected.includes(f.name) ? ACCENT : DIM])
                   .onClick(() => {
                     this.toggleSelect(f.name, !this.selected.includes(f.name));
                   })
