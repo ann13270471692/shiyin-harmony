@@ -165,7 +165,7 @@ struct Index {
   @Builder libraryTab() {
     Column() {
       Row() {
-        Text('拾音').fontSize(24).fontWeight(FontWeight.Bold).fontColor('#F5F5F7')
+        Text('梦秋音乐').fontSize(24).fontWeight(FontWeight.Bold).fontColor('#F5F5F7')
         Blank()
         Button('刷新').fontSize(14).onClick(() => {
           if (this.ctx !== null) {
@@ -319,8 +319,12 @@ struct Index {
           Button('清空').fontSize(12).margin({ left: 6 }).onClick(() => {
             this.selected = [];
           })
-          Button(this.dlActive ? '下载中…' : '下载选中').fontSize(12).margin({ left: 6 }).onClick(() => {
-            this.startDownload();
+          Button(this.dlActive ? '停止' : '下载选中').fontSize(12).margin({ left: 6 }).onClick(() => {
+            if (this.dlActive) {
+              this.downloader.cancelRequested = true;
+            } else {
+              this.startDownload();
+            }
           })
         }.width('100%').margin({ top: 12 })
 
@@ -328,11 +332,11 @@ struct Index {
           ForEach(this.remoteFiles, (f: RemoteFile) => {
             ListItem() {
               Row() {
-                Checkbox()
-                  .select(this.selected.includes(f.name))
-                  .selectedColor('#FF9F0A')
-                  .onChange((v: boolean) => {
-                    this.toggleSelect(f.name, v);
+                Text(this.selected.includes(f.name) ? '☑' : '☐')
+                  .fontSize(22)
+                  .fontColor(this.selected.includes(f.name) ? '#FF9F0A' : '#8E8E93')
+                  .onClick(() => {
+                    this.toggleSelect(f.name, !this.selected.includes(f.name));
                   })
                 Text(f.name).fontSize(13).fontColor('#F5F5F7').maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis }).layoutWeight(1).margin({ left: 6 })
                 Text(this.downloader.localNames.has(f.name) ? '已下载' : `${(f.size / 1048576).toFixed(1)}MB`)
@@ -380,7 +384,7 @@ struct Index {
   private toggleSelect(name: string, on: boolean): void {
     if (on) {
       if (!this.selected.includes(name)) {
-        this.selected.push(name);
+        this.selected = this.selected.concat([name]);
       }
     } else {
       this.selected = this.selected.filter((n: string) => n !== name);

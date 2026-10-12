@@ -1,7 +1,7 @@
 {
   "string": [
-    { "name": "module_desc", "value": "拾音主模块" },
-    { "name": "ability_desc", "value": "拾音" },
-    { "name": "ability_label", "value": "拾音" }
+    { "name": "module_desc", "value": "梦秋音乐主模块" },
+    { "name": "ability_desc", "value": "梦秋音乐" },
+    { "name": "ability_label", "value": "梦秋音乐" }
   ]
 }

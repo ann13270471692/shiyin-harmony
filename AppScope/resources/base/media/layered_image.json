@@ -1,0 +1,7 @@
+{
+  "layered_image": {
+    "backgroundColor": "#101014",
+    "foregroundImage": "$media:foreground",
+    "backgroundImage": "$media:background"
+  }
+}

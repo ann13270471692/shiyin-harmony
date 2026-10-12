@@ -12,10 +12,19 @@ export class Manifest {
   files: RemoteFile[] = [];
 }
 
+const SEGMENT = 1048576; // 1MB 分段：绕开 http 模块 5MB 响应上限，且天然断点续传
+
+function delay(ms: number): Promise<void> {
+  return new Promise<void>((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}
+
 export class SyncDownloader {
   host: string = '';
   port: number = 0;
   downloading: boolean = false;
+  cancelRequested: boolean = false;
   progressText: string = '';
   localNames: Set<string> = new Set();
   private listeners: Array<() => void> = [];
@@ -30,8 +39,8 @@ export class SyncDownloader {
     }
   }
 
-  private baseUrl(): string {
-    return `http://${this.host}:${this.port}`;
+  cancel(): void {
+    this.cancelRequested = true;
   }
 
   scanLocal(dir: string): void {
@@ -64,41 +73,69 @@ export class SyncDownloader {
     }
   }
 
+  private baseUrl(): string {
+    return `http://${this.host}:${this.port}`;
+  }
+
   async downloadAll(files: RemoteFile[], dir: string): Promise<void> {
     if (this.downloading) {
       return;
     }
     this.downloading = true;
+    this.cancelRequested = false;
     let done = 0;
     let failed = 0;
     try {
       for (const f of files) {
+        if (this.cancelRequested) {
+          this.progressText = '已停止';
+          break;
+        }
         if (this.localNames.has(f.name)) {
           continue;
         }
-        done++;
-        this.progressText = `下载 ${f.name}（${done}/${files.length}）`;
+        this.progressText = `下载 ${f.name}（剩余约 ${files.length - done - failed} 个）`;
         this.notify();
         try {
-          await this.downloadOne(f.name, dir);
+          await this.downloadOne(f, dir);
           this.localNames.add(f.name);
+          done++;
         } catch (e) {
           failed++;
-          const err = e as BusinessError;
           hilog.error(0x0000, 'Shiyin', 'download %{public}s failed', f.name);
-          this.progressText = `失败 ${f.name}，继续其余（累计失败 ${failed}）`;
+          this.progressText = `失败 ${f.name}（已保留进度，可重下续传）`;
           this.notify();
         }
       }
-      this.progressText = failed === 0 ? `完成，共 ${done} 个文件` : `结束：成功 ${done - failed}，失败 ${failed}`;
+      this.progressText = failed === 0
+        ? `完成，共 ${done} 个文件`
+        : `结束：成功 ${done}，失败 ${failed}（失败的再点一次即可续传）`;
     } finally {
       this.downloading = false;
       this.notify();
     }
   }
 
-  private async downloadOne(name: string, dir: string): Promise<void> {
-    const finalPath = `${dir}/${name}`;
+  private async fetchSegment(name: string, start: number, end: number): Promise<http.HttpResponse> {
+    const req = http.createHttp();
+    try {
+      const headers: Record<string, string> = { 'Range': `bytes=${start}-${end}` };
+      const options: http.HttpRequestOptions = {
+        method: http.RequestMethod.GET,
+        expectDataType: http.HttpDataType.ARRAY_BUFFER,
+        header: headers,
+        connectTimeout: 8000,
+        readTimeout: 30000
+      };
+      const url = `${this.baseUrl()}/file/${encodeURIComponent(name).replace(/%2F/g, '/')}`;
+      return await req.request(url, options);
+    } finally {
+      req.destroy();
+    }
+  }
+
+  private async downloadOne(f: RemoteFile, dir: string): Promise<void> {
+    const finalPath = `${dir}/${f.name}`;
     const partPath = `${finalPath}.part`;
     let have = 0;
     try {
@@ -108,42 +145,67 @@ export class SyncDownloader {
     } catch (e) {
       have = 0;
     }
-    const options: http.HttpRequestOptions = {
-      method: http.RequestMethod.GET,
-      expectDataType: http.HttpDataType.ARRAY_BUFFER,
-      connectTimeout: 8000,
-      readTimeout: 120000
-    };
-    if (have > 0) {
-      const headers: Record<string, string> = { 'Range': `bytes=${have}-` };
-      options.header = headers;
-    }
-    const req = http.createHttp();
-    try {
-      const resp = await req.request(`${this.baseUrl()}/${encodeURIComponent(name).replace(/%2F/g, '/')}`, options);
-      if (resp.responseCode !== 200 && resp.responseCode !== 206) {
-        throw new Error(`HTTP ${resp.responseCode}`);
-      }
-      const body = resp.result as ArrayBuffer;
-      let file: fs.File | null = null;
+    if (have > f.size) {
+      have = 0;
       try {
-        file = fs.openSync(partPath, fs.OpenMode.WRITE_ONLY | fs.OpenMode.CREATE | fs.OpenMode.APPEND);
-        if (resp.responseCode === 200) {
-          // 服务器忽略了 Range：从头覆盖
+        fs.unlinkSync(partPath);
+      } catch (e) {
+        // ignore
+      }
+    }
+    const file = fs.openSync(partPath, fs.OpenMode.WRITE_ONLY | fs.OpenMode.CREATE | fs.OpenMode.APPEND);
+    try {
+      while (have < f.size) {
+        if (this.cancelRequested) {
+          throw new Error('cancelled');
+        }
+        const end = Math.min(have + SEGMENT - 1, f.size - 1);
+        let body: ArrayBuffer | null = null;
+        let serverFull = false;
+        for (let attempt = 1; attempt <= 3 && body === null; attempt++) {
+          try {
+            const resp = await this.fetchSegment(f.name, have, end);
+            if (resp.responseCode === 206) {
+              body = resp.result as ArrayBuffer;
+            } else if (resp.responseCode === 200) {
+              // 服务器忽略 Range：整文件返回，从头覆盖
+              body = resp.result as ArrayBuffer;
+              serverFull = true;
+            } else if (resp.responseCode === 416) {
+              body = new ArrayBuffer(0);
+            } else {
+              throw new Error(`HTTP ${resp.responseCode}`);
+            }
+          } catch (e) {
+            if (attempt < 3) {
+              await delay(400 * attempt);
+            }
+          }
+        }
+        if (body === null) {
+          throw new Error(`segment ${have} failed`);
+        }
+        if (serverFull) {
           fs.truncateSync(file.fd, 0);
+          have = 0;
         }
         fs.writeSync(file.fd, body);
-      } finally {
-        if (file !== null) {
-          fs.closeSync(file);
+        have += body.byteLength;
+        if (body.byteLength === 0) {
+          break;
         }
+        this.progressText = `${f.name} ${(have / 1048576).toFixed(1)}/${(f.size / 1048576).toFixed(1)}MB`;
+        this.notify();
       }
-      if (fs.accessSync(finalPath)) {
-        fs.unlinkSync(finalPath);
-      }
-      fs.renameSync(partPath, finalPath);
     } finally {
-      req.destroy();
+      fs.closeSync(file);
     }
+    if (have < f.size) {
+      throw new Error(`incomplete ${have}/${f.size}`);
+    }
+    if (fs.accessSync(finalPath)) {
+      fs.unlinkSync(finalPath);
+    }
+    fs.renameSync(partPath, finalPath);
   }
 }
