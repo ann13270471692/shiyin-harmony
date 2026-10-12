@@ -9,6 +9,14 @@ import { Track, TimeFormat } from '../model/Track';
 import { SyncBrowser, ServerEntry } from '../sync/SyncBrowser';
 import { SyncDownloader, RemoteFile } from '../sync/SyncDownloader';
 
+const BG: string = '#0D0D11';
+const CARD: string = '#191920';
+const LINE: string = '#26262E';
+const TXT: string = '#F2F2F5';
+const SUB: string = '#9A9AA4';
+const DIM: string = '#5C5C66';
+const ACCENT: string = '#FF9F0A';
+
 @Entry
 @Component
 struct Index {
@@ -16,6 +24,7 @@ struct Index {
   @State libTracks: Track[] = [];
   @State curTitle: string = '';
   @State curArtist: string = '';
+  @State curPath: string = '';
   @State curPosMs: number = 0;
   @State curDurMs: number = 0;
   @State isPlaying: boolean = false;
@@ -23,7 +32,7 @@ struct Index {
   @State repeatMode: number = 0;
   @State lyrics: LyricLine[] = [];
   @State lyricIdx: number = -1;
-  private lastLyricChange: number = 0;
+  @State lyricOffset: number = 0;
   @State servers: ServerEntry[] = [];
   @State remoteFiles: RemoteFile[] = [];
   @State selected: string[] = [];
@@ -41,6 +50,8 @@ struct Index {
   private scroller: Scroller = new Scroller();
   private lastTrackPath: string = '';
   private manualUntil: number = 0;
+  private lastLyricChange: number = 0;
+  private timerId: number = -1;
   private ctx: common.UIAbilityContext | null = null;
 
   aboutToAppear(): void {
@@ -65,19 +76,45 @@ struct Index {
     this.downloader.scanLocal(this.library.musicDir(ctx));
     this.libTracks = this.library.tracks.slice();
     this.servers = this.browser.servers.slice();
+    this.lyricOffset = this.engine.lyricOffsetMs;
+    // 100ms 心跳：进度条与歌词按墙钟插值平滑走
+    this.timerId = setInterval(() => {
+      this.tick();
+    }, 100);
+  }
+
+  aboutToDisappear(): void {
+    if (this.timerId >= 0) {
+      clearInterval(this.timerId);
+      this.timerId = -1;
+    }
+  }
+
+  private tick(): void {
+    if (!this.engine.isPlaying) {
+      return;
+    }
+    const pos = this.engine.positionMs();
+    this.curPosMs = pos;
+    if (!this.seekDragging) {
+      this.seekValue = pos;
+    }
+    this.autoScrollLyrics();
   }
 
   private syncEngine(): void {
     const c = this.engine.current;
     this.curTitle = c !== null ? c.title : '';
     this.curArtist = c !== null ? c.artist : '';
-    this.curPosMs = this.engine.currentTimeMs;
+    this.curPath = c !== null ? c.path : '';
+    this.curPosMs = this.engine.positionMs();
     this.curDurMs = this.engine.durationMs;
     this.isPlaying = this.engine.isPlaying;
     this.shuffleOn = this.engine.shuffle;
     this.repeatMode = this.engine.repeatMode;
+    this.lyricOffset = this.engine.lyricOffsetMs;
     if (!this.seekDragging) {
-      this.seekValue = this.engine.currentTimeMs;
+      this.seekValue = this.curPosMs;
     }
     if (c !== null && c.path !== this.lastTrackPath) {
       this.lastTrackPath = c.path;
@@ -117,10 +154,11 @@ struct Index {
   }
 
   private currentLyricIndex(): number {
-    const t = this.curPosMs;
+    // 墙钟插值 + 用户偏移；提前量只留 120ms，避免歌词比人声早
+    const t = this.engine.positionMs() + this.engine.lyricOffsetMs;
     let idx = -1;
     for (let i = 0; i < this.lyrics.length; i++) {
-      if (this.lyrics[i].timeMs <= t + 300) {
+      if (this.lyrics[i].timeMs <= t + 120) {
         idx = i;
       } else {
         break;
@@ -140,57 +178,148 @@ struct Index {
       this.lastLyricChange = now;
       this.lyricIdx = idx;
       if (idx >= 0 && now >= this.manualUntil) {
-        // 快嘴段落行距 <0.8s：关闭平滑动画，避免整页连滚
         this.scroller.scrollToIndex(idx, !fast, ScrollAlign.CENTER);
       }
     }
   }
 
   build() {
-    Tabs({ barPosition: BarPosition.End, index: this.tabIdx }) {
-      TabContent() {
-        this.libraryTab()
-      }.tabBar('曲库')
+    Column() {
+      Tabs({ barPosition: BarPosition.End, index: this.tabIdx }) {
+        TabContent() {
+          this.libraryTab()
+        }.tabBar('曲库')
 
-      TabContent() {
-        this.nowPlayingTab()
-      }.tabBar('播放')
+        TabContent() {
+          this.nowPlayingTab()
+        }.tabBar('播放')
 
-      TabContent() {
-        this.importTab()
-      }.tabBar('导入')
+        TabContent() {
+          this.importTab()
+        }.tabBar('导入')
+      }
+      .barMode(BarMode.Fixed)
+      .barHeight(0)
+      .scrollable(false)
+      .onChange((i: number) => {
+        this.tabIdx = i;
+      })
+      .layoutWeight(1)
+
+      this.bottomBar()
     }
-    .barMode(BarMode.Fixed)
-    .onChange((i: number) => {
-      this.tabIdx = i;
+    .width('100%')
+    .height('100%')
+    .backgroundColor(BG)
+  }
+
+  @Builder tabItem(label: string, glyph: string, idx: number) {
+    Column({ space: 3 }) {
+      Text(glyph)
+        .fontSize(21)
+        .fontColor(this.tabIdx === idx ? ACCENT : DIM)
+      Text(label)
+        .fontSize(12)
+        .fontColor(this.tabIdx === idx ? ACCENT : SUB)
+        .fontWeight(this.tabIdx === idx ? FontWeight.Medium : FontWeight.Normal)
+    }
+    .layoutWeight(1)
+    .padding({ top: 8, bottom: 10 })
+    .onClick(() => {
+      this.tabIdx = idx;
     })
-    .backgroundColor('#101014')
+  }
+
+  @Builder bottomBar() {
+    Column() {
+      Divider().strokeWidth(0.5).color(LINE)
+      Row() {
+        this.tabItem('曲库', '♫', 0)
+        this.tabItem('播放', '▷', 1)
+        this.tabItem('导入', '⇩', 2)
+      }
+      .width('100%')
+    }
+    .width('100%')
+    .backgroundColor('#121218')
+  }
+
+  @Builder sectionTitle(t: string) {
+    Text(t).fontSize(13).fontColor(SUB).fontFamily('HarmonyOS Sans')
+  }
+
+  @Builder pillButton(label: string, primary: boolean, action: () => void) {
+    Text(label)
+      .fontSize(13)
+      .fontColor(primary ? '#111114' : TXT)
+      .backgroundColor(primary ? ACCENT : CARD)
+      .borderRadius(16)
+      .border({ width: primary ? 0 : 1, color: LINE })
+      .padding({ left: 12, right: 12, top: 7, bottom: 7 })
+      .onClick(action)
   }
 
   @Builder libraryTab() {
     Column() {
       Row() {
-        Text('梦秋音乐').fontSize(24).fontWeight(FontWeight.Bold).fontColor('#F5F5F7')
+        Column({ space: 2 }) {
+          Text('梦秋音乐').fontSize(26).fontWeight(FontWeight.Bold).fontColor(TXT)
+          Text(`${this.libTracks.length} 首 · 本地`).fontSize(12).fontColor(SUB)
+        }.alignItems(HorizontalAlign.Start)
         Blank()
-        Button('刷新').fontSize(14).onClick(() => {
+        this.pillButton('刷新', false, () => {
           if (this.ctx !== null) {
             this.library.refresh(this.ctx);
           }
         })
-      }.padding(12).width('100%')
+      }.padding({ left: 18, right: 18, top: 16, bottom: 12 }).width('100%')
 
       if (this.libTracks.length === 0) {
-        Column() {
-          Text('曲库为空\n到「导入」标签从电脑拉取音乐').fontColor('#8E8E93').fontSize(15).textAlign(TextAlign.Center)
+        Column({ space: 8 }) {
+          Text('♫').fontSize(44).fontColor(DIM)
+          Text('曲库为空').fontSize(16).fontColor(TXT)
+          Text('到「导入」标签从电脑拉取音乐').fontSize(13).fontColor(SUB)
         }.justifyContent(FlexAlign.Center).layoutWeight(1)
       } else {
-        List() {
-          ForEach(this.libTracks, (t: Track) => {
+        List({ space: 6 }) {
+          ForEach(this.libTracks, (t: Track, i: number) => {
             ListItem() {
-              Column() {
-                Text(t.title).fontSize(16).fontColor('#F5F5F7').maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
-                Text(`${t.artist} · ${TimeFormat.ms(t.durationMs)}`).fontSize(13).fontColor('#8E8E93').margin({ top: 2 })
-              }.alignItems(HorizontalAlign.Start).width('100%').padding(10)
+              Row({ space: 12 }) {
+                Stack() {
+                  Text(i % 2 === 0 ? '♪' : '♫').fontSize(16).fontColor(ACCENT)
+                }
+                .width(40)
+                .height(40)
+                .borderRadius(10)
+                .backgroundColor('#22222B')
+
+                Column({ space: 3 }) {
+                  Text(t.title)
+                    .fontSize(16)
+                    .fontColor(t.path === this.curPath ? ACCENT : TXT)
+                    .fontWeight(t.path === this.curPath ? FontWeight.Medium : FontWeight.Normal)
+                    .maxLines(1)
+                    .textOverflow({ overflow: TextOverflow.Ellipsis })
+                    .width('100%')
+                  Text(t.artist)
+                    .fontSize(12)
+                    .fontColor(SUB)
+                    .maxLines(1)
+                    .textOverflow({ overflow: TextOverflow.Ellipsis })
+                    .width('100%')
+                }
+                .alignItems(HorizontalAlign.Start)
+                .layoutWeight(1)
+
+                if (t.path === this.curPath) {
+                  Text(this.isPlaying ? '▮▮' : '▶').fontSize(13).fontColor(ACCENT)
+                }
+                Text(TimeFormat.ms(t.durationMs)).fontSize(12).fontColor(DIM)
+              }
+              .width('100%')
+              .padding({ left: 12, right: 12, top: 9, bottom: 9 })
+              .backgroundColor(t.path === this.curPath ? '#1E1A14' : CARD)
+              .borderRadius(12)
             }
             .onClick(() => {
               this.engine.playQueue(this.libTracks, t);
@@ -198,7 +327,7 @@ struct Index {
             })
           }, (t: Track) => t.path)
         }
-        .divider({ strokeWidth: 0.5, color: '#2C2C2E' })
+        .padding({ left: 12, right: 12 })
         .layoutWeight(1)
       }
     }.width('100%').height('100%')
@@ -206,14 +335,50 @@ struct Index {
 
   @Builder nowPlayingTab() {
     Column() {
-      Text(this.curTitle === '' ? '未在播放' : this.curTitle)
-        .fontSize(20).fontWeight(FontWeight.Bold).fontColor('#F5F5F7').maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis })
-      Text(this.curArtist).fontSize(14).fontColor('#8E8E93').margin({ top: 4, bottom: 12 })
+      if (this.curTitle === '') {
+        Column({ space: 8 }) {
+          Text('♪').fontSize(44).fontColor(DIM)
+          Text('未在播放').fontSize(16).fontColor(TXT)
+          Text('到「曲库」选一首开始').fontSize(13).fontColor(SUB)
+        }.justifyContent(FlexAlign.Center).layoutWeight(1)
+      } else {
+        Row({ space: 14 }) {
+          Stack() {
+            Text('♪').fontSize(30).fontColor('#FFFFFF')
+          }
+          .width(72)
+          .height(72)
+          .borderRadius(14)
+          .linearGradient({ angle: 135, colors: [['#5A3A10', 0.0], ['#241A2E', 1.0]] })
 
-      Row() {
-        Text(TimeFormat.ms(this.curPosMs)).fontSize(12).fontColor('#8E8E93')
-        Slider({ value: this.seekValue, min: 0, max: Math.max(this.curDurMs, 1000), step: 1000 })
+          Column({ space: 4 }) {
+            Text(this.curTitle)
+              .fontSize(19)
+              .fontWeight(FontWeight.Bold)
+              .fontColor(TXT)
+              .maxLines(1)
+              .textOverflow({ overflow: TextOverflow.Ellipsis })
+              .width('100%')
+            Text(this.curArtist).fontSize(13).fontColor(SUB).maxLines(1).width('100%')
+            Text(`${TimeFormat.ms(this.curPosMs)} / ${TimeFormat.ms(this.curDurMs)}`)
+              .fontSize(11)
+              .fontColor(DIM)
+              .margin({ top: 2 })
+          }
+          .alignItems(HorizontalAlign.Start)
           .layoutWeight(1)
+        }
+        .width('100%')
+        .padding({ left: 16, right: 16, top: 14 })
+
+        Slider({ value: this.seekValue, min: 0, max: Math.max(this.curDurMs, 1000), step: 100 })
+          .selectedColor(ACCENT)
+          .trackColor(LINE)
+          .blockColor(ACCENT)
+          .blockSize({ width: 14, height: 14 })
+          .trackThickness(4)
+          .width('100%')
+          .margin({ top: 10 })
           .onChange((v: number, mode: SliderChangeMode) => {
             if (mode === SliderChangeMode.Begin || mode === SliderChangeMode.Moving) {
               this.seekDragging = true;
@@ -223,144 +388,220 @@ struct Index {
               this.seekDragging = false;
             }
           })
-        Text(TimeFormat.ms(this.curDurMs)).fontSize(12).fontColor('#8E8E93')
-      }.width('100%')
 
-      Row() {
-        Text(this.shuffleOn ? '🔀' : '🔀̶').fontSize(22).fontColor(this.shuffleOn ? '#FF9F0A' : '#6B6B70')
-          .onClick(() => {
-            this.engine.setShuffle(!this.shuffleOn);
-          })
-        Text('⏮').fontSize(26).fontColor('#F5F5F7').margin({ left: 20 })
-          .onClick(() => {
-            this.engine.advance(-1);
-          })
-        Text(this.isPlaying ? '⏸' : '▶').fontSize(40).fontColor('#F5F5F7').margin({ left: 24, right: 24 })
+        Row({ space: 26 }) {
+          Text(this.shuffleOn ? '🔀' : '🔀')
+            .fontSize(20)
+            .fontColor(this.shuffleOn ? ACCENT : DIM)
+            .onClick(() => {
+              this.engine.setShuffle(!this.shuffleOn);
+            })
+          Text('⏮').fontSize(26).fontColor(TXT)
+            .onClick(() => {
+              this.engine.advance(-1);
+            })
+          Stack() {
+            Text(this.isPlaying ? '❚❚' : '▷').fontSize(this.isPlaying ? 20 : 26).fontColor('#111114')
+          }
+          .width(62)
+          .height(62)
+          .borderRadius(31)
+          .backgroundColor(ACCENT)
           .onClick(() => {
             this.engine.togglePlay();
           })
-        Text('⏭').fontSize(26).fontColor('#F5F5F7')
-          .onClick(() => {
-            this.engine.advance(1);
-          })
-        Text(this.repeatMode === RepeatMode.Off ? '🔁̶' : (this.repeatMode === RepeatMode.All ? '🔁' : '🔂'))
-          .fontSize(22)
-          .fontColor(this.repeatMode === RepeatMode.Off ? '#6B6B70' : '#FF9F0A')
-          .margin({ left: 20 })
-          .onClick(() => {
-            this.engine.cycleRepeat();
-          })
-      }.justifyContent(FlexAlign.Center).width('100%').margin({ top: 8, bottom: 12 })
-
-      if (this.lyrics.length === 0) {
-        Column() {
-          Text(this.curTitle === '' ? '选择歌曲开始播放' : '暂无歌词').fontColor('#8E8E93').fontSize(15)
-        }.justifyContent(FlexAlign.Center).layoutWeight(1)
-      } else {
-        List({ scroller: this.scroller }) {
-          ForEach(this.lyrics, (line: LyricLine, idx: number) => {
-            ListItem() {
-              Text(line.text)
-                .fontSize(idx === this.lyricIdx ? 19 : 15)
-                .fontColor(idx === this.lyricIdx ? '#FFFFFF' : '#6B6B70')
-                .fontWeight(idx === this.lyricIdx ? FontWeight.Bold : FontWeight.Normal)
-                .textAlign(TextAlign.Center)
-                .width('100%')
-                .padding({ top: 6, bottom: 6 })
-            }
+          Text('⏭').fontSize(26).fontColor(TXT)
             .onClick(() => {
-              this.engine.seekTo(line.timeMs);
+              this.engine.advance(1);
             })
-          }, (line: LyricLine, idx: number) => `${idx}-${line.timeMs}`)
+          Text(this.repeatMode === RepeatMode.Off ? '🔁' : (this.repeatMode === RepeatMode.All ? '🔁' : '🔂'))
+            .fontSize(20)
+            .fontColor(this.repeatMode === RepeatMode.Off ? DIM : ACCENT)
+            .onClick(() => {
+              this.engine.cycleRepeat();
+            })
         }
-        .layoutWeight(1)
-        .onScrollStart(() => {
-          this.manualUntil = Date.now() + 4000;
-        })
+        .justifyContent(FlexAlign.Center)
+        .width('100%')
+        .margin({ top: 12 })
+
+        if (this.lyrics.length > 0) {
+          Row({ space: 10 }) {
+            this.sectionTitle(`歌词偏移 ${this.lyricOffset >= 0 ? '+' : ''}${(this.lyricOffset / 1000).toFixed(1)}s`)
+            this.pillButton('−0.5s', false, () => {
+              this.engine.nudgeLyricOffset(-500);
+            })
+            this.pillButton('+0.5s', false, () => {
+              this.engine.nudgeLyricOffset(500);
+            })
+            Blank()
+            if (Date.now() < this.manualUntil) {
+              this.pillButton('回到当前', true, () => {
+                this.manualUntil = 0;
+                if (this.lyricIdx >= 0) {
+                  this.scroller.scrollToIndex(this.lyricIdx, true, ScrollAlign.CENTER);
+                }
+              })
+            }
+          }
+          .width('100%')
+          .padding({ left: 16, right: 16, top: 10 })
+        }
+
+        if (this.lyrics.length === 0) {
+          Column() {
+            Text('暂无歌词').fontColor(SUB).fontSize(14)
+          }.justifyContent(FlexAlign.Center).layoutWeight(1)
+        } else {
+          List({ scroller: this.scroller, space: 2 }) {
+            ForEach(this.lyrics, (line: LyricLine, idx: number) => {
+              ListItem() {
+                Text(line.text)
+                  .fontSize(idx === this.lyricIdx ? 19 : 15)
+                  .fontColor(idx === this.lyricIdx ? '#FFFFFF' : (idx < this.lyricIdx ? DIM : SUB))
+                  .fontWeight(idx === this.lyricIdx ? FontWeight.Bold : FontWeight.Normal)
+                  .textAlign(TextAlign.Center)
+                  .width('100%')
+                  .padding({ top: 7, bottom: 7 })
+              }
+              .onClick(() => {
+                this.engine.seekTo(line.timeMs);
+                this.manualUntil = 0;
+              })
+            }, (line: LyricLine, idx: number) => `${idx}-${line.timeMs}`)
+          }
+          .layoutWeight(1)
+          .padding({ top: 40, bottom: 40 })
+          .onScrollStart(() => {
+            this.manualUntil = Date.now() + 4000;
+          })
+        }
       }
-    }.padding(16).width('100%').height('100%')
+    }.width('100%').height('100%')
   }
 
   @Builder importTab() {
     Column() {
-      Text('局域网导入').fontSize(20).fontWeight(FontWeight.Bold).fontColor('#F5F5F7')
-      Text('在电脑上运行 SyncServer\\启动同步服务器.bat，手机与电脑同一 WiFi').fontSize(12).fontColor('#8E8E93').margin({ top: 4 })
+      Column({ space: 3 }) {
+        Text('局域网导入').fontSize(26).fontWeight(FontWeight.Bold).fontColor(TXT)
+        Text('电脑运行 SyncServer\\启动同步服务器.bat，手机与电脑同一 WiFi')
+          .fontSize(12)
+          .fontColor(SUB)
+      }
+      .alignItems(HorizontalAlign.Start)
+      .width('100%')
+      .padding({ left: 18, right: 18, top: 16, bottom: 12 })
 
-      Text('发现的服务器').fontSize(14).fontColor('#8E8E93').margin({ top: 14 })
-      ForEach(this.servers, (s: ServerEntry) => {
-        Row() {
-          Column() {
-            Text(s.name).fontSize(15).fontColor('#F5F5F7')
-            Text(`${s.host}:${s.port}`).fontSize(12).fontColor('#8E8E93')
-          }.alignItems(HorizontalAlign.Start)
-          Blank()
-          Button('连接').fontSize(13).onClick(() => {
-            this.connectServer(s);
-          })
-        }.width('100%').padding(10)
-      }, (s: ServerEntry) => `${s.host}:${s.port}`)
+      Column({ space: 8 }) {
+        this.sectionTitle('发现的服务器')
+        if (this.servers.length === 0) {
+          Text('未发现服务器，可在下方手动输入电脑 IP').fontSize(12).fontColor(DIM)
+        }
+        ForEach(this.servers, (s: ServerEntry) => {
+          Row() {
+            Column({ space: 2 }) {
+              Text(s.name).fontSize(15).fontColor(TXT)
+              Text(`${s.host}:${s.port}`).fontSize(12).fontColor(SUB)
+            }.alignItems(HorizontalAlign.Start).layoutWeight(1)
+            this.pillButton('连接', true, () => {
+              this.connectServer(s);
+            })
+          }.width('100%')
+        }, (s: ServerEntry) => `${s.host}:${s.port}`)
+      }
+      .width('100%')
+      .padding(14)
+      .backgroundColor(CARD)
+      .borderRadius(14)
+      .margin({ left: 12, right: 12 })
 
-      Row() {
-        TextInput({ placeholder: '手动输入电脑 IP（如 192.168.1.9）', text: this.manualHost })
+      Row({ space: 8 }) {
+        TextInput({ placeholder: '手动输入电脑 IP（如 192.168.2.12）', text: this.manualHost })
           .fontSize(13)
+          .backgroundColor('#14141A')
+          .fontColor(TXT)
+          .placeholderColor(DIM)
+          .borderRadius(10)
+          .height(40)
           .layoutWeight(1)
           .onChange((v: string) => {
             this.manualHost = v;
           })
-        Button('添加').fontSize(13).margin({ left: 8 }).onClick(() => {
+        this.pillButton('添加', false, () => {
           if (this.manualHost.length > 0) {
             this.browser.addManual(this.manualHost, 8450);
           }
         })
-      }.margin({ top: 8 }).width('100%')
+      }
+      .width('100%')
+      .padding({ left: 12, right: 12, top: 12 })
 
       if (this.connectedServer.length > 0) {
-        Row() {
-          Text(`已连接 ${this.connectedServer}`).fontSize(13).fontColor('#8E8E93')
-          Blank()
-          Button('全选未下载').fontSize(12).onClick(() => {
+        Row({ space: 8 }) {
+          Text(`已连接 ${this.connectedServer}`).fontSize(12).fontColor(SUB).layoutWeight(1)
+          this.pillButton('全选未下载', false, () => {
             this.selectAllPending();
           })
-          Button('清空').fontSize(12).margin({ left: 6 }).onClick(() => {
+          this.pillButton('清空', false, () => {
             this.selected = [];
           })
-          Button(this.dlActive ? '停止' : '下载选中').fontSize(12).margin({ left: 6 }).onClick(() => {
+          this.pillButton(this.dlActive ? '停止' : '下载选中', true, () => {
             if (this.dlActive) {
               this.downloader.cancelRequested = true;
             } else {
               this.startDownload();
             }
           })
-        }.width('100%').margin({ top: 12 })
+        }
+        .width('100%')
+        .padding({ left: 12, right: 12, top: 12 })
 
-        List() {
+        Text(`已选 ${this.selected.length} / ${this.remoteFiles.length} 个文件`)
+          .fontSize(12)
+          .fontColor(DIM)
+          .padding({ left: 14, top: 6 })
+
+        List({ space: 4 }) {
           ForEach(this.remoteFiles, (f: RemoteFile) => {
             ListItem() {
-              Row() {
+              Row({ space: 8 }) {
                 Text(this.selected.includes(f.name) ? '☑' : '☐')
-                  .fontSize(22)
-                  .fontColor(this.selected.includes(f.name) ? '#FF9F0A' : '#8E8E93')
+                  .fontSize(20)
+                  .fontColor(this.selected.includes(f.name) ? ACCENT : DIM)
                   .onClick(() => {
                     this.toggleSelect(f.name, !this.selected.includes(f.name));
                   })
-                Text(f.name).fontSize(13).fontColor('#F5F5F7').maxLines(1).textOverflow({ overflow: TextOverflow.Ellipsis }).layoutWeight(1).margin({ left: 6 })
+                Text(f.name)
+                  .fontSize(13)
+                  .fontColor(TXT)
+                  .maxLines(1)
+                  .textOverflow({ overflow: TextOverflow.Ellipsis })
+                  .layoutWeight(1)
                 Text(this.downloader.localNames.has(f.name) ? '已下载' : `${(f.size / 1048576).toFixed(1)}MB`)
                   .fontSize(12)
-                  .fontColor(this.downloader.localNames.has(f.name) ? '#30D158' : '#8E8E93')
-              }.width('100%').padding(6)
+                  .fontColor(this.downloader.localNames.has(f.name) ? '#30D158' : SUB)
+              }
+              .width('100%')
+              .padding({ left: 10, right: 10, top: 8, bottom: 8 })
+              .backgroundColor(CARD)
+              .borderRadius(10)
             }
           }, (f: RemoteFile) => f.name)
         }
+        .padding({ left: 12, right: 12, top: 6 })
         .layoutWeight(1)
-        .divider({ strokeWidth: 0.5, color: '#2C2C2E' })
       } else {
         Blank()
       }
 
       if (this.dlProgress.length > 0) {
-        Text(this.dlProgress).fontSize(13).fontColor('#FF9F0A').margin({ top: 8 }).width('100%')
+        Text(this.dlProgress)
+          .fontSize(12)
+          .fontColor(ACCENT)
+          .width('100%')
+          .padding({ left: 14, right: 14, top: 8, bottom: 10 })
       }
-    }.padding(16).width('100%').height('100%')
+    }.width('100%').height('100%')
   }
 
   private async connectServer(s: ServerEntry): Promise<void> {

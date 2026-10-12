@@ -42,6 +42,10 @@ export class PlayerEngine {
   private resumePositions: Map<string, number> = new Map();
   private prefs: preferences.Preferences | null = null;
   private advancing: boolean = false;
+  // AVPlayer 的 timeUpdate 只有 0.5~1s 一次，用墙钟插值出连续进度
+  private baseMs: number = 0;
+  private baseWall: number = 0;
+  lyricOffsetMs: number = 0;
 
   addListener(l: () => void): void {
     this.listeners.push(l);
@@ -67,6 +71,7 @@ export class PlayerEngine {
           this.resumePositions.set(k, obj[k]);
         }
       }
+      this.lyricOffsetMs = this.prefs.getSync('lyricOffset', 0) as number;
     } catch (e) {
       this.prefs = null;
     }
@@ -93,11 +98,13 @@ export class PlayerEngine {
           }
         } else if (state === 'playing') {
           this.isPlaying = true;
+          this.baseWall = Date.now();
           this.startBg();
           this.pushSessionState();
           this.notify();
         } else if (state === 'paused') {
           this.isPlaying = false;
+          this.baseMs = this.positionMs();
           this.pushSessionState();
           this.notify();
         } else if (state === 'completed') {
@@ -118,6 +125,8 @@ export class PlayerEngine {
         this.notify();
       });
       p.on('timeUpdate', (t: number) => {
+        this.baseMs = t;
+        this.baseWall = Date.now();
         this.currentTimeMs = t;
         this.notify();
       });
@@ -208,6 +217,8 @@ export class PlayerEngine {
     this.saveResume();
     this.current = track;
     this.currentTimeMs = 0;
+    this.baseMs = 0;
+    this.baseWall = Date.now();
     this.durationMs = track.durationMs;
     this.pendingPlay = autoplay;
     this.notify();
@@ -279,7 +290,32 @@ export class PlayerEngine {
       return;
     }
     this.currentTimeMs = ms;
+    this.baseMs = ms;
+    this.baseWall = Date.now();
     p.seek(Math.max(0, ms), media.SeekMode.SEEK_CLOSEST);
+    this.notify();
+  }
+
+  /** 连续进度：timeUpdate 之间用墙钟插值，歌词/进度条不再跳秒 */
+  positionMs(): number {
+    if (!this.isPlaying) {
+      return this.baseMs;
+    }
+    const est = this.baseMs + (Date.now() - this.baseWall);
+    const dur = this.durationMs > 0 ? this.durationMs : 0;
+    return dur > 0 ? Math.min(est, dur) : est;
+  }
+
+  nudgeLyricOffset(deltaMs: number): void {
+    this.lyricOffsetMs += deltaMs;
+    if (this.prefs !== null) {
+      try {
+        this.prefs.putSync('lyricOffset', this.lyricOffsetMs);
+        this.prefs.flush();
+      } catch (e) {
+        // ignore
+      }
+    }
     this.notify();
   }
 
