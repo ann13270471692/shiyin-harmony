@@ -23,6 +23,7 @@ struct Index {
   @State repeatMode: number = 0;
   @State lyrics: LyricLine[] = [];
   @State lyricIdx: number = -1;
+  private lastLyricChange: number = 0;
   @State servers: ServerEntry[] = [];
   @State remoteFiles: RemoteFile[] = [];
   @State selected: string[] = [];
@@ -134,9 +135,13 @@ struct Index {
     }
     const idx = this.currentLyricIndex();
     if (idx !== this.lyricIdx) {
+      const now = Date.now();
+      const fast = now - this.lastLyricChange < 800;
+      this.lastLyricChange = now;
       this.lyricIdx = idx;
-      if (idx >= 0 && Date.now() >= this.manualUntil) {
-        this.scroller.scrollToIndex(idx, true, ScrollAlign.CENTER);
+      if (idx >= 0 && now >= this.manualUntil) {
+        // 快嘴段落行距 <0.8s：关闭平滑动画，避免整页连滚
+        this.scroller.scrollToIndex(idx, !fast, ScrollAlign.CENTER);
       }
     }
   }
