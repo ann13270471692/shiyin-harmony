@@ -7,6 +7,8 @@ export class RemoteFile {
   name: string = '';
   size: number = 0;
   mtime: number = 0;
+  /// 影视金曲的剧名（服务器 movie-meta.json 提供，普通歌没有这个字段）
+  movie?: string;
 }
 
 export class Manifest {
@@ -31,11 +33,69 @@ export class SyncDownloader {
   staleNames: Set<string> = new Set();
   /// 每个文件上次下载时对应的电脑 mtime，用来判断"电脑上改过没有"
   knownMtimes: Map<string, number> = new Map();
+  /// 在手机上被删过的歌（含它的歌词）：导入页标成「已删除」，不会被自动重下；
+  /// 手动重新下载成功后标记自动清掉。
+  deletedNames: Set<string> = new Set();
   private mtimeFile: string = '';
+  private deletedFile: string = '';
   private listeners: Array<() => void> = [];
 
   setMtimeFile(path: string): void {
     this.mtimeFile = path;
+  }
+
+  setDeletedFile(path: string): void {
+    this.deletedFile = path;
+    this.deletedNames = new Set<string>();
+    if (this.deletedFile.length === 0) {
+      return;
+    }
+    try {
+      if (!fs.accessSync(this.deletedFile)) {
+        return;
+      }
+      const arr = JSON.parse(fs.readTextSync(this.deletedFile)) as string[];
+      for (const n of arr) {
+        this.deletedNames.add(n);
+      }
+    } catch (e) {
+      this.deletedNames = new Set<string>();
+    }
+  }
+
+  private saveDeleted(): void {
+    if (this.deletedFile.length === 0) {
+      return;
+    }
+    try {
+      const arr: string[] = [];
+      this.deletedNames.forEach((n: string) => {
+        arr.push(n);
+      });
+      const fh = fs.openSync(this.deletedFile,
+        fs.OpenMode.WRITE_ONLY | fs.OpenMode.CREATE | fs.OpenMode.TRUNC);
+      try {
+        fs.writeSync(fh.fd, JSON.stringify(arr));
+      } finally {
+        fs.closeSync(fh);
+      }
+    } catch (e) {
+      hilog.error(0x0000, 'Shiyin', 'save deleted list failed');
+    }
+  }
+
+  markDeleted(name: string): void {
+    if (name.length === 0 || this.deletedNames.has(name)) {
+      return;
+    }
+    this.deletedNames.add(name);
+    this.saveDeleted();
+  }
+
+  clearDeleted(name: string): void {
+    if (this.deletedNames.delete(name)) {
+      this.saveDeleted();
+    }
   }
 
   loadMtimes(): void {
@@ -138,19 +198,36 @@ export class SyncDownloader {
     }
   }
 
+  private lastEtag: string = '';
+  private lastFiles: RemoteFile[] = [];
+
   async fetchManifest(): Promise<RemoteFile[]> {
     const req = http.createHttp();
     try {
-      const resp = await req.request(`${this.baseUrl()}/manifest.json`, {
+      const opts: http.HttpRequestOptions = {
         method: http.RequestMethod.GET,
         expectDataType: http.HttpDataType.STRING,
         connectTimeout: 8000,
         readTimeout: 15000
-      });
+      };
+      if (this.lastEtag.length > 0) {
+        const h: Record<string, string> = { 'If-None-Match': this.lastEtag };
+        opts.header = h;
+      }
+      const resp = await req.request(`${this.baseUrl()}/manifest.json`, opts);
+      if (resp.responseCode === 304 && this.lastFiles.length > 0) {
+        // 列表没变：不再传 2MB、不再解析 2 万条
+        return this.lastFiles;
+      }
       if (resp.responseCode !== 200) {
         throw new Error(`HTTP ${resp.responseCode}`);
       }
+      const hd = resp.header as Record<string, string>;
+      if (hd !== null && hd !== undefined && hd['etag'] !== undefined) {
+        this.lastEtag = hd['etag'];
+      }
       const m = JSON.parse(resp.result as string) as Manifest;
+      this.lastFiles = m.files;
       return m.files;
     } finally {
       req.destroy();
@@ -193,6 +270,7 @@ export class SyncDownloader {
           this.localNames.add(f.name);
           this.knownMtimes.set(f.name, f.mtime);
           this.saveMtimes();
+          this.clearDeleted(f.name);   // 重新下回来了，「已删除」标记自动消掉
           done++;
         } catch (e) {
           failed++;

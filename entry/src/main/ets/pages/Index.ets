@@ -8,6 +8,9 @@ import { LRCParser, LyricLine } from '../lyrics/LRCParser';
 import { Track, TimeFormat } from '../model/Track';
 import { SyncBrowser, ServerEntry } from '../sync/SyncBrowser';
 import { SyncDownloader, RemoteFile } from '../sync/SyncDownloader';
+import { SongEntry, groupSongs, sortSongs, SORT_LABELS, SORT_DOWNLOADED,
+  FILTER_LABELS, FILTER_MOVIE, FILTER_DELETED, FILTER_UNDOWNLOADED } from '../sync/SongGroup';
+import { fuzzyFilter } from '../util/FuzzyMatch';
 
 const BG: string = '#0D0D11';
 const CARD: string = '#191920';
@@ -32,8 +35,20 @@ struct Index {
   @State repeatMode: number = 0;
   @State lyrics: LyricLine[] = [];
   @State lyricIdx: number = -1;
+  @State lyricAdj: number = 0;
   @State servers: ServerEntry[] = [];
   @State remoteFiles: RemoteFile[] = [];
+  // 导入页显示的是「一首歌」而不是一个个文件：mp3 与歌词合并成一行
+  @State songs: SongEntry[] = [];
+  // 排序方式：默认已下载优先，可切到 没下的优先 / 年份 / 歌手 / 影视
+  @State sortMode: number = SORT_DOWNLOADED;
+  @State showServers: boolean = true;
+  @State dlCount: number = 0;
+  // 手机上删过的歌数量
+  @State delCount: number = 0;
+  // 只看某一类：0 全部 / 1 只看影视 / 2 只看已删除 / 3 只看未下载
+  @State filterMode: number = 0;
+  @State importQuery: string = '';
   @State selected: string[] = [];
   @State dlProgress: string = '';
   @State dlActive: boolean = false;
@@ -50,6 +65,8 @@ struct Index {
   private library: LibraryStore = LibraryStore.shared();
   private browser: SyncBrowser = SyncBrowser.shared();
   private downloader: SyncDownloader = new SyncDownloader();
+  // 当前连着的服务器，「刷新」按钮直接重新读它的清单
+  private connectedEntry: ServerEntry | null = null;
   private scroller: Scroller = new Scroller();
   private lastTrackPath: string = '';
   private manualUntil: number = 0;
@@ -74,10 +91,15 @@ struct Index {
       this.dlActive = this.downloader.downloading;
       this.syncFileStates();
     });
-    this.engine.init(ctx);
+    // init 是异步的：偏好里的随机/循环要等它完成才读得到
+    this.engine.init(ctx).then(() => {
+      this.shuffleOn = this.engine.shuffle;
+      this.repeatMode = this.engine.repeatMode;
+    });
     this.library.refresh(ctx);
     this.browser.start(ctx);
     this.downloader.setMtimeFile(`${ctx.filesDir}/remote-mtimes.json`);
+    this.downloader.setDeletedFile(`${ctx.filesDir}/deleted-songs.json`);
     this.downloader.loadMtimes();
     this.downloader.scanLocal(this.library.musicDir(ctx));
     this.syncFileStates();
@@ -138,6 +160,22 @@ struct Index {
     }
     this.lyrics = raw !== null ? LRCParser.parse(raw) : [];
     this.lyricIdx = -1;
+    this.lyricAdj = this.engine.lyricAdjFor(t.path);
+  }
+
+  private bumpLyricAdj(deltaMs: number): void {
+    if (this.curPath.length === 0) {
+      return;
+    }
+    const v = this.lyricAdj + deltaMs;
+    this.lyricAdj = v;
+    this.engine.setLyricAdj(this.curPath, v);
+    const idx = this.currentLyricIndex();
+    if (idx >= 0) {
+      this.lyricIdx = idx;
+      this.scroller.scrollToIndex(idx, true, ScrollAlign.CENTER);
+    }
+    this.toast('歌词' + (v === 0 ? '已对齐' : (v > 0 ? '提前 ' : '延后 ') + Math.abs(v / 1000).toFixed(1) + ' 秒'));
   }
 
   private readTextFile(path: string): string | null {
@@ -183,7 +221,7 @@ struct Index {
 
   private currentLyricIndex(): number {
     // 墙钟插值 − 输出通路延迟（蓝牙耳机 180ms 量级）
-    const t = this.engine.positionMs() - this.engine.outputLatencyMs;
+    const t = this.engine.positionMs() - this.engine.outputLatencyMs + this.lyricAdj;
     let idx = -1;
     for (let i = 0; i < this.lyrics.length; i++) {
       if (this.lyrics[i].timeMs > t) {
@@ -211,6 +249,92 @@ struct Index {
         this.scroller.scrollToIndex(idx, !fast, ScrollAlign.CENTER);
       }
     }
+  }
+
+  private toast(m: string): void {
+    try {
+      this.getUIContext().getPromptAction().showToast({ message: m, duration: 1200 });
+    } catch (e) {
+      // 提示失败不影响操作本身
+    }
+  }
+
+  // 删除只作用于手机上的下载副本：电脑端 SyncServer 的文件不动，
+  // 之后在「导入」里它会标成「已删除」，想拉回来手动点下载即可
+  private confirmDelete(t: Track): void {
+    this.getUIContext().showAlertDialog({
+      title: '从手机删除',
+      message: `${t.title}\n${t.artist}\n\n只删除手机上已下载的副本，电脑上的文件不受影响。`,
+      alignment: DialogAlignment.Center,
+      primaryButton: {
+        value: '取消',
+        action: () => {
+        }
+      },
+      secondaryButton: {
+        value: '删除',
+        fontColor: '#FF453A',
+        action: () => {
+          this.deleteTrack(t);
+        }
+      }
+    });
+  }
+
+  private deleteTrack(t: Track): void {
+    if (this.ctx === null) {
+      return;
+    }
+    if (t.path === this.curPath) {
+      this.engine.stop();
+      this.curTitle = '';
+      this.curArtist = '';
+      this.curPath = '';
+      this.lyrics = [];
+      this.lyricIdx = -1;
+    }
+    const ok = this.library.remove(t);
+    // 记下「这首歌在手机上被删过」：导入页标成「已删除」，不会被自动重下
+    const nm = t.path.substring(t.path.lastIndexOf('/') + 1);
+    if (nm.length > 0) {
+      this.downloader.markDeleted(nm);
+      const dot = nm.lastIndexOf('.');
+      if (dot > 0) {
+        const lrc = nm.substring(0, dot) + '.lrc';
+        for (const f of this.remoteFiles) {
+          if (f.name === lrc) {
+            this.downloader.markDeleted(lrc);
+            break;
+          }
+        }
+      }
+    }
+    this.downloader.scanLocal(this.library.musicDir(this.ctx));
+    this.syncFileStates();
+    this.refreshSongs();
+    this.libTracks = this.library.tracks.slice();
+    this.toast(ok ? '已从手机删除，电脑上的文件保留' : '删除失败');
+  }
+
+  private toggleShuffle(): void {
+    const on = !this.shuffleOn;
+    this.engine.setShuffle(on);
+    // @Builder 按值传参不刷新，这里直接同步 @State 让按钮立刻变色
+    this.shuffleOn = on;
+    this.toast(on ? '随机播放' : '顺序播放');
+  }
+
+  private repeatLabel(): string {
+    if (this.repeatMode === RepeatMode.One) {
+      return '单曲循环';
+    }
+    return this.repeatMode === RepeatMode.All ? '列表循环' : '不循环';
+  }
+
+  private cycleRepeatMode(): void {
+    this.engine.cycleRepeat();
+    this.repeatMode = this.engine.repeatMode;
+    this.toast(this.repeatLabel());
   }
 
   build() {
@@ -324,6 +448,9 @@ struct Index {
         Column({ space: 3 }) {
           Text('梦秋音乐').fontSize(26).fontWeight(FontWeight.Bold).fontColor(TXT)
           Text(`${this.libTracks.length} 首 · 本地`).fontSize(12).fontColor(SUB)
+          if (this.libTracks.length > 0) {
+            Text('长按歌曲可删除（只删手机上的副本）').fontSize(11).fontColor(DIM)
+          }
         }.alignItems(HorizontalAlign.Start)
         Blank()
         this.iconBtn($r('sys.symbol.arrow_clockwise'), 20, SUB, () => {
@@ -390,6 +517,12 @@ struct Index {
               this.engine.playQueue(this.libTracks, t);
               this.tabIdx = 1;
             })
+            .gesture(
+              LongPressGesture({ duration: 420 })
+                .onAction(() => {
+                  this.confirmDelete(t);
+                })
+            )
           }, (t: Track) => t.path)
         }
         .padding({ left: 12, right: 12 })
@@ -469,9 +602,23 @@ struct Index {
         .margin({ top: 4 })
 
         Row() {
-          this.iconBtn($r('sys.symbol.shuffle'), 20, this.shuffleOn ? ACCENT : SUB, () => {
-            this.engine.setShuffle(!this.shuffleOn);
-          })
+          // 随机：图标与文字直接读 @State（走 iconBtn 按值传参不会刷新）
+          Column({ space: 1 }) {
+            Stack() {
+              SymbolGlyph($r('sys.symbol.shuffle'))
+                .fontSize(20)
+                .fontColor([this.shuffleOn ? ACCENT : SUB])
+            }
+            .width(46)
+            .height(46)
+            .borderRadius(23)
+            .onClick(() => {
+              this.toggleShuffle();
+            })
+            Text(this.shuffleOn ? '随机' : '顺序')
+              .fontSize(10)
+              .fontColor(this.shuffleOn ? ACCENT : DIM)
+          }
           this.iconBtn($r('sys.symbol.backward_end_fill'), 24, TXT, () => {
             this.engine.advance(-1);
           })
@@ -491,11 +638,25 @@ struct Index {
           this.iconBtn($r('sys.symbol.forward_end_fill'), 24, TXT, () => {
             this.engine.advance(1);
           })
-          this.iconBtn(this.repeatMode === RepeatMode.One
-            ? $r('sys.symbol.repeat_1')
-            : $r('sys.symbol.repeat'), 20, this.repeatMode === RepeatMode.Off ? SUB : ACCENT, () => {
-            this.engine.cycleRepeat();
-          })
+          // 循环：不循环 → 列表循环 → 单曲循环，图标与文字直接读 @State
+          Column({ space: 1 }) {
+            Stack() {
+              SymbolGlyph(this.repeatMode === RepeatMode.One
+                ? $r('sys.symbol.repeat_1')
+                : $r('sys.symbol.repeat'))
+                .fontSize(20)
+                .fontColor([this.repeatMode === RepeatMode.Off ? SUB : ACCENT])
+            }
+            .width(46)
+            .height(46)
+            .borderRadius(23)
+            .onClick(() => {
+              this.cycleRepeatMode();
+            })
+            Text(this.repeatMode === RepeatMode.One ? '单曲' : (this.repeatMode === RepeatMode.All ? '列表' : '不循环'))
+              .fontSize(10)
+              .fontColor(this.repeatMode === RepeatMode.Off ? DIM : ACCENT)
+          }
         }
         .justifyContent(FlexAlign.SpaceEvenly)
         .width('100%')
@@ -513,6 +674,24 @@ struct Index {
           }
           .width('100%')
           .padding({ left: 20, right: 20, top: 12 })
+        }
+
+        if (this.lyrics.length > 0) {
+          Row({ space: 12 }) {
+            this.chipButton('歌词晚 0.5 秒', () => {
+              this.bumpLyricAdj(-500);
+            })
+            Text(this.lyricAdj === 0 ? '歌词已对齐'
+              : ((this.lyricAdj > 0 ? '提前 ' : '延后 ') + Math.abs(this.lyricAdj / 1000).toFixed(1) + ' 秒'))
+              .fontSize(11)
+              .fontColor(this.lyricAdj === 0 ? SUB : ACCENT)
+            this.chipButton('歌词早 0.5 秒', () => {
+              this.bumpLyricAdj(500);
+            })
+          }
+          .justifyContent(FlexAlign.Center)
+          .width('100%')
+          .padding({ top: 10 })
         }
 
         if (this.lyrics.length === 0) {
@@ -553,16 +732,34 @@ struct Index {
 
   @Builder importTab() {
     Column() {
-      Column({ space: 3 }) {
-        Text('局域网导入').fontSize(26).fontWeight(FontWeight.Bold).fontColor(TXT)
-        Text('电脑运行 SyncServer\\启动同步服务器.bat，手机与电脑同一 WiFi')
-          .fontSize(12)
-          .fontColor(SUB)
-      }
-      .alignItems(HorizontalAlign.Start)
-      .width('100%')
-      .padding({ left: 18, right: 18, top: 16, bottom: 12 })
+      Row({ space: 10 }) {
+        Column({ space: 3 }) {
+          Text('局域网导入').fontSize(24).fontWeight(FontWeight.Bold).fontColor(TXT)
+          Text(this.connectedServer.length > 0
+            ? `已连接 ${this.connectedServer} · 共 ${this.songs.length} 首 · 本机已下载 ${this.dlCount} 首`
+            : '电脑运行 SyncServer\\启动同步服务器.bat，手机与电脑同一 WiFi')
+            .fontSize(13)
+            .fontColor(this.connectedServer.length > 0 ? SUB : DIM)
+            .maxLines(1)
+            .textOverflow({ overflow: TextOverflow.Ellipsis })
+        }
+        .alignItems(HorizontalAlign.Start)
+        .layoutWeight(1)
 
+        if (this.connectedServer.length > 0) {
+          this.pillButton('刷新', false, () => {
+            this.refreshFromServer();
+          })
+          // 标签写死：@Builder 按值传参不随 @State 刷新
+          this.pillButton('换电脑', false, () => {
+            this.showServers = !this.showServers;
+          })
+        }
+      }
+      .width('100%')
+      .padding({ left: 18, right: 18, top: 14, bottom: 10 })
+
+      if (this.connectedServer.length === 0 || this.showServers) {
       Column({ space: 10 }) {
         Row({ space: 8 }) {
           SymbolGlyph($r('sys.symbol.wifi_router'))
@@ -620,27 +817,191 @@ struct Index {
       }
       .width('100%')
       .padding({ left: 12, right: 12, top: 12 })
+      }
 
-      if (this.connectedServer.length > 0) {
+      // 模糊查找：歌名/歌手/拼音首字母都能命中，列表实时过滤
+      if (this.remoteFiles.length > 0) {
         Row({ space: 8 }) {
-          SymbolGlyph($r('sys.symbol.checkmark_circle_fill'))
-            .fontSize(14)
-            .fontColor(['#30D158'])
-          Text(`已连接 ${this.connectedServer}`).fontSize(12).fontColor(SUB).layoutWeight(1)
-          this.pillButton('全选未下载', false, () => {
-            this.selectAllPending();
-          })
+          SymbolGlyph($r('sys.symbol.magnifyingglass'))
+            .fontSize(18)
+            .fontColor([SUB])
+          TextInput({ placeholder: '模糊查找：歌名 / 歌手 / 拼音（如 qt）', text: this.importQuery })
+            .fontSize(15)
+            .height(42)
+            .backgroundColor(CARD)
+            .borderRadius(10)
+            .placeholderColor(DIM)
+            .fontColor(TXT)
+            .layoutWeight(1)
+            .onChange((v: string) => {
+              this.importQuery = v;
+            })
+          if (this.importQuery.length > 0) {
+            Text('清除')
+              .fontSize(12)
+              .fontColor(ACCENT)
+              .padding(6)
+              .onClick(() => {
+                this.importQuery = '';
+              })
+          }
+        }
+        .width('100%')
+        .padding({ left: 12, right: 12, top: 10 })
+
+        // 排序：默认已下载优先，可切到 没下的优先 / 年份 / 歌手 / 影视
+        Scroll() {
+          Row({ space: 8 }) {
+            ForEach(SORT_LABELS, (label: string, idx: number) => {
+              Text(label)
+                .fontSize(14)
+                .fontColor(this.sortMode === idx ? '#111114' : SUB)
+                .backgroundColor(this.sortMode === idx ? ACCENT : '#15151B')
+                .borderRadius(15)
+                .border({ width: 1, color: this.sortMode === idx ? ACCENT : LINE })
+                .padding({ left: 13, right: 13, top: 7, bottom: 7 })
+                .onClick(() => {
+                  this.setSortMode(idx);
+                })
+            }, (label: string, idx: number) => `${idx}-${this.sortMode}`)
+          }
+        }
+        .scrollable(ScrollDirection.Horizontal)
+        .scrollBar(BarState.Off)
+        .width('100%')
+        .padding({ left: 12, right: 12, top: 10 })
+
+        // 只看某一类：全部 / 只看影视 / 只看已删除 / 只看未下载
+        Scroll() {
+          Row({ space: 8 }) {
+            ForEach(FILTER_LABELS, (label: string, idx: number) => {
+              Text(label)
+                .fontSize(14)
+                .fontColor(this.filterMode === idx ? '#111114' : SUB)
+                .backgroundColor(this.filterMode === idx ? '#4C9AFF' : '#15151B')
+                .borderRadius(15)
+                .border({ width: 1, color: this.filterMode === idx ? '#4C9AFF' : LINE })
+                .padding({ left: 13, right: 13, top: 7, bottom: 7 })
+                .onClick(() => {
+                  this.filterMode = idx;
+                })
+            }, (label: string, idx: number) => `${idx}-${this.filterMode}`)
+          }
+        }
+        .scrollable(ScrollDirection.Horizontal)
+        .scrollBar(BarState.Off)
+        .width('100%')
+        .padding({ left: 12, right: 12, top: 10 })
+
+        Row({ space: 8 }) {
+          Text(this.importQuery.length > 0
+            ? `匹配 ${this.visibleSongs().length} / 共 ${this.songs.length} 首 · 已选 ${this.selected.length} 首`
+            : `共 ${this.songs.length} 首 · 已下载 ${this.dlCount} 首 · 已删除 ${this.delCount} 首 · 已选 ${this.selected.length} 首`)
+            .fontSize(13)
+            .fontColor(SUB)
+            .layoutWeight(1)
           this.pillButton('清空', false, () => {
             this.selected = [];
           })
-          // 下载按钮直接内联写：@Builder 按值传参不会随 @State 刷新，
-          // 之前下载完标签卡在"停止"就是这个原因
-          Text(this.dlActive ? '停止' : '下载选中')
+        }
+        .width('100%')
+        .padding({ left: 12, right: 12, top: 10 })
+      }
+
+      if (this.remoteFiles.length > 0) {
+        List({ space: 4 }) {
+          ForEach(this.visibleSongs(), (s: SongEntry) => {
+            ListItem() {
+              Row({ space: 10 }) {
+                SymbolGlyph(this.selected.includes(s.key)
+                  ? $r('sys.symbol.checkmark_square_fill')
+                  : $r('sys.symbol.square'))
+                  .fontSize(24)
+                  .fontColor([this.selected.includes(s.key) ? ACCENT : DIM])
+                  .onClick(() => {
+                    this.toggleSelect(s.key, !this.selected.includes(s.key));
+                  })
+                // 主行歌名，副行歌手 · 年份（影视金曲带标记）
+                Column({ space: 3 }) {
+                  Text(s.title)
+                    .fontSize(16)
+                    .fontColor(TXT)
+                    .maxLines(1)
+                    .textOverflow({ overflow: TextOverflow.Ellipsis })
+                    .width('100%')
+                  Row({ space: 6 }) {
+                    Text(s.artist.length > 0 ? s.artist : '未知歌手')
+                      .fontSize(13)
+                      .fontColor(SUB)
+                      .maxLines(1)
+                      .textOverflow({ overflow: TextOverflow.Ellipsis })
+                      .layoutWeight(1)
+                    if (s.year > 0) {
+                      Text(`${s.year}`).fontSize(13).fontColor(DIM)
+                    }
+                    if (s.movie) {
+                      // 有剧名就显示剧名（服务器 movie-meta.json），没有就只显示「影视」
+                      Text(s.movieName.length > 0 ? s.movieName : '影视')
+                        .fontSize(11)
+                        .fontColor('#FFD7A0')
+                        .backgroundColor('#3A2E18')
+                        .borderRadius(6)
+                        .maxLines(1)
+                        .textOverflow({ overflow: TextOverflow.Ellipsis })
+                        .constraintSize({ maxWidth: 170 })
+                        .padding({ left: 6, right: 6, top: 2, bottom: 2 })
+                    }
+                  }
+                  .width('100%')
+                }
+                .alignItems(HorizontalAlign.Start)
+                .layoutWeight(1)
+                .onClick(() => {
+                  this.toggleSelect(s.key, !this.selected.includes(s.key));
+                })
+                Column({ space: 3 }) {
+                  Text(s.stale ? '需更新' : (s.downloaded ? '已下载' : (s.deleted ? '已删除' : '未下载')))
+                    .fontSize(12)
+                    .fontColor(s.stale ? '#FF9F0A' : (s.downloaded ? '#30D158' : (s.deleted ? '#FF9F0A' : DIM)))
+                  Text(`${(s.size / 1048576).toFixed(1)}MB`)
+                    .fontSize(12)
+                    .fontColor(DIM)
+                }
+                .alignItems(HorizontalAlign.End)
+              }
+              .width('100%')
+              .padding({ left: 10, right: 10, top: 10, bottom: 10 })
+              .backgroundColor(CARD)
+              .borderRadius(10)
+            }
+          }, (s: SongEntry) => `${s.key}|${s.stale ? 1 : 0}|${s.downloaded ? 1 : 0}|${s.deleted ? 1 : 0}|${s.size}`)
+        }
+        .padding({ left: 12, right: 12, top: 6 })
+        .layoutWeight(1)
+      } else {
+        Blank()
+      }
+
+      // 底部固定操作条：拇指够得着，下载状态也在这里看
+      if (this.remoteFiles.length > 0) {
+        Row({ space: 10 }) {
+          Text(this.dlActive
+            ? (this.dlProgress.length > 0 ? this.dlProgress : '正在下载…')
+            : (this.selected.length > 0
+              ? `已选 ${this.selected.length} 首 · mp3 与歌词一起下载`
+              : '点一行选一首 · 没歌词的自动跳过'))
             .fontSize(13)
+            .fontColor(this.dlActive ? ACCENT : DIM)
+            .maxLines(1)
+            .textOverflow({ overflow: TextOverflow.Ellipsis })
+            .layoutWeight(1)
+          Text(this.dlActive ? '停止' : `下载 ${this.selected.length} 首`)
+            .fontSize(16)
+            .fontWeight(FontWeight.Bold)
             .fontColor('#111114')
-            .backgroundColor(ACCENT)
-            .borderRadius(16)
-            .padding({ left: 12, right: 12, top: 7, bottom: 7 })
+            .backgroundColor(this.dlActive || this.selected.length > 0 ? ACCENT : '#3A3A44')
+            .borderRadius(22)
+            .padding({ left: 18, right: 18, top: 11, bottom: 11 })
             .onClick(() => {
               if (this.dlActive) {
                 this.downloader.cancelRequested = true;
@@ -650,58 +1011,55 @@ struct Index {
             })
         }
         .width('100%')
-        .padding({ left: 12, right: 12, top: 12 })
-
-        Text(`已选 ${this.selected.length} / ${this.remoteFiles.length} 个文件`)
-          .fontSize(12)
-          .fontColor(DIM)
-          .padding({ left: 14, top: 6 })
-
-        List({ space: 4 }) {
-          ForEach(this.remoteFiles, (f: RemoteFile) => {
-            ListItem() {
-              Row({ space: 8 }) {
-                SymbolGlyph(this.selected.includes(f.name)
-                  ? $r('sys.symbol.checkmark_square_fill')
-                  : $r('sys.symbol.square'))
-                  .fontSize(20)
-                  .fontColor([this.selected.includes(f.name) ? ACCENT : DIM])
-                  .onClick(() => {
-                    this.toggleSelect(f.name, !this.selected.includes(f.name));
-                  })
-                Text(f.name)
-                  .fontSize(13)
-                  .fontColor(TXT)
-                  .maxLines(1)
-                  .textOverflow({ overflow: TextOverflow.Ellipsis })
-                  .layoutWeight(1)
-                Text(this.staleArr.includes(f.name) ? '需更新'
-                  : (this.localArr.includes(f.name) ? '已下载' : `${(f.size / 1048576).toFixed(1)}MB`))
-                  .fontSize(12)
-                  .fontColor(this.staleArr.includes(f.name) ? '#FF9F0A'
-                    : (this.localArr.includes(f.name) ? '#30D158' : SUB))
-              }
-              .width('100%')
-              .padding({ left: 10, right: 10, top: 8, bottom: 8 })
-              .backgroundColor(CARD)
-              .borderRadius(10)
-            }
-          }, (f: RemoteFile) => f.name)
-        }
-        .padding({ left: 12, right: 12, top: 6 })
-        .layoutWeight(1)
-      } else {
-        Blank()
-      }
-
-      if (this.dlProgress.length > 0) {
-        Text(this.dlProgress)
-          .fontSize(12)
-          .fontColor(ACCENT)
-          .width('100%')
-          .padding({ left: 14, right: 14, top: 8, bottom: 10 })
+        .padding({ left: 14, right: 14, top: 10, bottom: 12 })
+        .backgroundColor('#14141A')
       }
     }.width('100%').height('100%')
+  }
+
+  // 按模糊查找过滤后的可见歌曲（匹配度高的排前面）
+  private visibleSongs(): SongEntry[] {
+    let base: SongEntry[] = this.songs;
+    if (this.filterMode === FILTER_MOVIE) {
+      base = this.songs.filter((s: SongEntry) => s.movie);
+    } else if (this.filterMode === FILTER_DELETED) {
+      base = this.songs.filter((s: SongEntry) => s.deleted);
+    } else if (this.filterMode === FILTER_UNDOWNLOADED) {
+      base = this.songs.filter((s: SongEntry) => !s.downloaded);
+    }
+    return fuzzyFilter(base, (s: SongEntry) => (s.movieName.length === 0 ? s.key : s.key + ' ' + s.movieName), this.importQuery);
+  }
+
+  // 文件列表 -> 歌曲列表（一行一首，歌词并入），状态取音频+歌词合并结果
+  private refreshSongs(): void {
+    this.songs = groupSongs(this.remoteFiles, this.downloader.localNames,
+      this.downloader.staleNames, this.downloader.deletedNames);
+    sortSongs(this.songs, this.sortMode);
+    let n = 0;
+    let d = 0;
+    for (const s of this.songs) {
+      if (s.downloaded) {
+        n++;
+      }
+      if (s.deleted) {
+        d++;
+      }
+    }
+    this.dlCount = n;
+    this.delCount = d;
+  }
+
+  // 换排序方式：排完重新赋值，@State 才会驱动列表重建
+  private setSortMode(mode: number): void {
+    this.sortMode = mode;
+    sortSongs(this.songs, mode);
+    this.songs = this.songs.slice();
+  }
+
+  private async refreshFromServer(): Promise<void> {
+    if (this.connectedEntry !== null) {
+      await this.connectServer(this.connectedEntry);
+    }
   }
 
   private async connectServer(s: ServerEntry): Promise<void> {
@@ -715,9 +1073,12 @@ struct Index {
       this.remoteFiles = await this.downloader.fetchManifest();
       this.downloader.markStale(this.remoteFiles, this.library.musicDir(this.ctx));
       this.syncFileStates();
+      this.refreshSongs();
       this.connectedServer = `${s.host}:${s.port}`;
+      this.connectedEntry = s;
+      this.showServers = false;   // 连上就把服务器卡片收起，把位置留给歌曲列表
       this.dlProgress = '';
-      this.selectAllPending();
+      this.selected = [];   // 连上后一首一首自己点，不再一次选中几千首
     } catch (e) {
       this.dlProgress = '连接失败：检查 IP、防火墙与同步服务器窗口';
     }
@@ -736,13 +1097,6 @@ struct Index {
     this.localArr = l;
   }
 
-  private selectAllPending(): void {
-    this.selected = this.remoteFiles
-      .filter((f: RemoteFile) => !this.downloader.localNames.has(f.name)
-        || this.downloader.staleNames.has(f.name))
-      .map((f: RemoteFile) => f.name);
-  }
-
   private toggleSelect(name: string, on: boolean): void {
     if (on) {
       if (!this.selected.includes(name)) {
@@ -757,7 +1111,19 @@ struct Index {
     if (this.ctx === null) {
       return;
     }
-    const chosen = this.remoteFiles.filter((f: RemoteFile) => this.selected.includes(f.name));
+    // 选中一首 = 音频 + 它的歌词；电脑上没歌词就只有音频，不另外提示
+    const chosen: RemoteFile[] = [];
+    for (const s of this.songs) {
+      if (!this.selected.includes(s.key)) {
+        continue;
+      }
+      if (s.audio !== null) {
+        chosen.push(s.audio);
+      }
+      if (s.lyric !== null) {
+        chosen.push(s.lyric);
+      }
+    }
     if (chosen.length === 0) {
       return;
     }
@@ -766,6 +1132,7 @@ struct Index {
     this.downloader.scanLocal(dir);
     this.downloader.markStale(this.remoteFiles, dir);
     this.syncFileStates();
+    this.refreshSongs();
     this.dlActive = this.downloader.downloading;
     await this.library.refresh(this.ctx);
   }

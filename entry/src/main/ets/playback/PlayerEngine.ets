@@ -97,8 +97,20 @@ export class PlayerEngine {
           this.resumePositions.set(k, obj[k]);
         }
       }
+      const adjRaw = this.prefs.getSync('lyricAdj', '') as string;
+      if (adjRaw.length > 0) {
+        const ao = JSON.parse(adjRaw) as Record<string, number>;
+        for (const k of Object.keys(ao)) {
+          this.adjByPath.set(k, ao[k]);
+        }
+      }
       // 手动歌词偏移已移除：清掉旧存档，避免残留值继续影响对齐
       this.prefs.putSync('lyricOffset', 0);
+      // 播放模式：随机与循环在重启后保持上次的选择
+      this.shuffle = this.prefs.getSync('play.shuffle', false) as boolean;
+      const rm = this.prefs.getSync('play.repeatMode', 0) as number;
+      this.repeatMode = (rm === 1 || rm === 2) ? rm : RepeatMode.Off;
+      this.prefs.flush();
     } catch (e) {
       this.prefs = null;
     }
@@ -200,7 +212,9 @@ export class PlayerEngine {
     this.buildOrder();
     let pos = 0;
     if (startAt !== null) {
-      const qi = this.queue.indexOf(startAt);
+      // 不能用对象身份定位：曲库重扫后 Track 会换成新实例，
+      // indexOf 失配就会退化成「从队列第一首开始播」
+      const qi = this.queueIndexOf(startAt);
       const oi = this.order.indexOf(qi);
       if (oi >= 0) {
         pos = oi;
@@ -208,6 +222,16 @@ export class PlayerEngine {
     }
     this.orderPos = pos;
     this.loadTrack(this.queue[this.order[pos]], true);
+  }
+
+  // 按 path 定位队列下标（-1 表示不在队列里）
+  private queueIndexOf(track: Track): number {
+    for (let i = 0; i < this.queue.length; i++) {
+      if (this.queue[i].path === track.path) {
+        return i;
+      }
+    }
+    return -1;
   }
 
   private buildOrder(): void {
@@ -379,18 +403,57 @@ export class PlayerEngine {
     const cur = this.current;
     this.buildOrder();
     if (cur !== null) {
-      const qi = this.queue.indexOf(cur);
-      const oi = this.order.indexOf(qi);
+      const oi = this.order.indexOf(this.queueIndexOf(cur));
       if (oi >= 0) {
         this.orderPos = oi;
       }
     }
+    this.savePlayModes();
     this.notify();
   }
 
   cycleRepeat(): void {
     this.repeatMode = (this.repeatMode + 1) % 3;
+    this.savePlayModes();
     this.notify();
+  }
+
+  private savePlayModes(): void {
+    if (this.prefs === null) {
+      return;
+    }
+    try {
+      this.prefs.putSync('play.shuffle', this.shuffle);
+      this.prefs.putSync('play.repeatMode', Number(this.repeatMode));
+      this.prefs.flush();
+    } catch (e) {
+      // 存档失败不影响本次播放，下次启动回到默认
+    }
+  }
+
+  private adjByPath: Map<string, number> = new Map();
+
+  // 每首歌各自的歌词偏移（毫秒）：源文件时间轴本身不准时唯一的补救
+  lyricAdjFor(path: string): number {
+    const v = this.adjByPath.get(path);
+    return v === undefined ? 0 : v;
+  }
+
+  setLyricAdj(path: string, ms: number): void {
+    this.adjByPath.set(path, ms);
+    if (this.prefs === null) {
+      return;
+    }
+    try {
+      const obj: Record<string, number> = {};
+      this.adjByPath.forEach((v: number, k: string) => {
+        obj[k] = v;
+      });
+      this.prefs.putSync('lyricAdj', JSON.stringify(obj));
+      this.prefs.flush();
+    } catch (e) {
+      // 存不上就只在本次生效
+    }
   }
 
   private saveResume(): void {

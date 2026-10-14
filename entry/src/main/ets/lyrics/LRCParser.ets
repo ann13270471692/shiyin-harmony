@@ -13,6 +13,16 @@ const TAG_RE = new RegExp('\\[(\\d{1,2}):(\\d{2})(?:[.:](\\d{1,3}))?\\]', 'g');
 export class LRCParser {
   static parse(raw: string): LyricLine[] {
     const lines: LyricLine[] = [];
+    // [offset:+500] / [offset:-1200]：整首歌词的全局偏移（毫秒），
+    // 之前被当成无时间标签的行丢掉，导致这类歌词整体错位
+    let offset = 0;
+    const om = new RegExp('\\[offset:\\s*([+-]?\\d+)\\s*\\]').exec(raw);
+    if (om !== null) {
+      offset = parseInt(om[1], 10);
+      if (Number.isNaN(offset)) {
+        offset = 0;
+      }
+    }
     for (const line of raw.split(/\r?\n/)) {
       TAG_RE.lastIndex = 0;
       const times: number[] = [];
@@ -24,7 +34,7 @@ export class LRCParser {
         if (m[3] !== undefined && m[3].length > 0) {
           frac = parseInt(m[3], 10) / Math.pow(10, m[3].length);
         }
-        times.push((min * 60 + sec + frac) * 1000);
+        times.push(Math.max(0, (min * 60 + sec + frac) * 1000 + offset));
         m = TAG_RE.exec(line);
       }
       if (times.length === 0) {

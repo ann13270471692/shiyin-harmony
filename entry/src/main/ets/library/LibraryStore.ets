@@ -80,6 +80,30 @@ export class LibraryStore {
     }
   }
 
+  // 只删手机上已下载的副本（音频 + 同名歌词），电脑上的文件不受影响
+  remove(track: Track): boolean {
+    let ok = false;
+    try {
+      fs.unlinkSync(track.path);
+      ok = true;
+    } catch (e) {
+      hilog.error(0x0000, 'Shiyin', 'remove failed');
+    }
+    const lrc = track.path.substring(0, track.path.length - 4) + '.lrc';
+    try {
+      if (fs.accessSync(lrc)) {
+        fs.unlinkSync(lrc);
+      }
+    } catch (e) {
+      // 没有歌词文件，忽略
+    }
+    if (ok) {
+      this.tracks = this.tracks.filter((t: Track) => t.path !== track.path);
+      this.notify();
+    }
+    return ok;
+  }
+
   private static async probeDuration(path: string): Promise<number> {
     let file: fs.File | null = null;
     try {
