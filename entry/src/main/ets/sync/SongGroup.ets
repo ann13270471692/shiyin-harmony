@@ -20,22 +20,20 @@ export class SongEntry {
   artistPy: string = '';       // 歌手的拼音，用来按歌手排序
 }
 
-/// 排序方式（与界面上的排序按钮一一对应）
-export const SORT_DOWNLOADED: number = 0;   // 已下载优先（默认）
-export const SORT_UNDOWNLOADED: number = 1; // 没下的优先
-export const SORT_YEAR: number = 2;         // 年份
-export const SORT_ARTIST: number = 3;       // 歌手
-export const SORT_MOVIE: number = 4;        // 影视金曲优先
-export const SORT_DELETED: number = 5;      // 手机上删过的优先
+/// 排序方式（「已下载 / 未下载」已去掉：想看哪一类用「只看」筛选，不重复）
+export const SORT_YEAR: number = 0;         // 年份（默认）
+export const SORT_ARTIST: number = 1;       // 歌手
+export const SORT_MOVIE: number = 2;        // 影视金曲优先
+export const SORT_DELETED: number = 3;      // 手机上删过的优先
 
-export const SORT_LABELS: string[] = ['已下载', '未下载', '年份', '歌手', '影视', '已删除'];
+export const SORT_LABELS: string[] = ['年份', '歌手', '影视', '已删除'];
 
-/// 只看某一类：全部 / 只看影视 / 只看已删除 / 只看未下载
+/// 只看某一类：全部 / 只看影视 / 只看未下载 / 只看已删除
 export const FILTER_ALL: number = 0;
 export const FILTER_MOVIE: number = 1;
-export const FILTER_DELETED: number = 2;
-export const FILTER_UNDOWNLOADED: number = 3;
-export const FILTER_LABELS: string[] = ['全部', '只看影视', '只看已删除', '只看未下载'];
+export const FILTER_UNDOWNLOADED: number = 2;
+export const FILTER_DELETED: number = 3;
+export const FILTER_LABELS: string[] = ['全部', '只看影视', '只看未下载', '只看已删除'];
 
 function baseOf(name: string): string {
   const i = name.lastIndexOf('.');
@@ -129,15 +127,7 @@ function cmpKey(x: SongEntry, y: SongEntry): number {
 /// 按选中的排序方式原地排序；同一方式内始终回落到文件名序（= 年份序），保证稳定
 export function sortSongs(list: SongEntry[], mode: number): void {
   list.sort((x: SongEntry, y: SongEntry) => {
-    if (mode === SORT_DOWNLOADED) {
-      if (x.downloaded !== y.downloaded) {
-        return x.downloaded ? -1 : 1;
-      }
-    } else if (mode === SORT_UNDOWNLOADED) {
-      if (x.downloaded !== y.downloaded) {
-        return x.downloaded ? 1 : -1;
-      }
-    } else if (mode === SORT_DELETED) {
+    if (mode === SORT_DELETED) {
       if (x.deleted !== y.deleted) {
         return x.deleted ? -1 : 1;
       }

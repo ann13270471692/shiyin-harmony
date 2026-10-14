@@ -8,7 +8,7 @@ import { LRCParser, LyricLine } from '../lyrics/LRCParser';
 import { Track, TimeFormat } from '../model/Track';
 import { SyncBrowser, ServerEntry } from '../sync/SyncBrowser';
 import { SyncDownloader, RemoteFile } from '../sync/SyncDownloader';
-import { SongEntry, groupSongs, sortSongs, SORT_LABELS, SORT_DOWNLOADED,
+import { SongEntry, groupSongs, sortSongs, SORT_LABELS, SORT_YEAR,
   FILTER_LABELS, FILTER_MOVIE, FILTER_DELETED, FILTER_UNDOWNLOADED } from '../sync/SongGroup';
 import { fuzzyFilter } from '../util/FuzzyMatch';
 
@@ -40,8 +40,8 @@ struct Index {
   @State remoteFiles: RemoteFile[] = [];
   // 导入页显示的是「一首歌」而不是一个个文件：mp3 与歌词合并成一行
   @State songs: SongEntry[] = [];
-  // 排序方式：默认已下载优先，可切到 没下的优先 / 年份 / 歌手 / 影视
-  @State sortMode: number = SORT_DOWNLOADED;
+  // 排序方式：默认年份，可切到 歌手 / 影视 / 已删除（看哪一类用「只看」筛选）
+  @State sortMode: number = SORT_YEAR;
   @State showServers: boolean = true;
   @State dlCount: number = 0;
   // 手机上删过的歌数量
@@ -849,29 +849,7 @@ struct Index {
         .width('100%')
         .padding({ left: 12, right: 12, top: 10 })
 
-        // 排序：默认已下载优先，可切到 没下的优先 / 年份 / 歌手 / 影视
-        Scroll() {
-          Row({ space: 8 }) {
-            ForEach(SORT_LABELS, (label: string, idx: number) => {
-              Text(label)
-                .fontSize(14)
-                .fontColor(this.sortMode === idx ? '#111114' : SUB)
-                .backgroundColor(this.sortMode === idx ? ACCENT : '#15151B')
-                .borderRadius(15)
-                .border({ width: 1, color: this.sortMode === idx ? ACCENT : LINE })
-                .padding({ left: 13, right: 13, top: 7, bottom: 7 })
-                .onClick(() => {
-                  this.setSortMode(idx);
-                })
-            }, (label: string, idx: number) => `${idx}-${this.sortMode}`)
-          }
-        }
-        .scrollable(ScrollDirection.Horizontal)
-        .scrollBar(BarState.Off)
-        .width('100%')
-        .padding({ left: 12, right: 12, top: 10 })
-
-        // 只看某一类：全部 / 只看影视 / 只看已删除 / 只看未下载
+        // 一行搞定：先看（全部 / 只看影视 / 只看未下载 / 只看已删除）｜再排（年份 / 歌手 / 影视 / 已删除）
         Scroll() {
           Row({ space: 8 }) {
             ForEach(FILTER_LABELS, (label: string, idx: number) => {
@@ -886,6 +864,23 @@ struct Index {
                   this.filterMode = idx;
                 })
             }, (label: string, idx: number) => `${idx}-${this.filterMode}`)
+            Divider()
+              .vertical(true)
+              .strokeWidth(1)
+              .color(LINE)
+              .height(18)
+            ForEach(SORT_LABELS, (label: string, idx: number) => {
+              Text(label)
+                .fontSize(14)
+                .fontColor(this.sortMode === idx ? '#111114' : SUB)
+                .backgroundColor(this.sortMode === idx ? ACCENT : '#15151B')
+                .borderRadius(15)
+                .border({ width: 1, color: this.sortMode === idx ? ACCENT : LINE })
+                .padding({ left: 13, right: 13, top: 7, bottom: 7 })
+                .onClick(() => {
+                  this.setSortMode(idx);
+                })
+            }, (label: string, idx: number) => `${idx}-${this.sortMode}`)
           }
         }
         .scrollable(ScrollDirection.Horizontal)
